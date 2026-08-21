@@ -17,7 +17,7 @@ dotnet add package Prism.Flowline --version 1.0.0
 Add the feed once, authenticating with a PAT that has `read:packages`:
 
 ```bash
-dotnet nuget add source https://nuget.pkg.github.com/CodeShayk/index.json   --name github --username <you> --password <token> --store-password-in-clear-text
+dotnet nuget add source https://nuget.pkg.github.com/oss-brewers/index.json   --name github --username <you> --password <token> --store-password-in-clear-text
 ```
 
 The package is the headless framework only; `Prism.Flowline.Service` is the reference host and is not
@@ -64,10 +64,10 @@ docker build -t prism-flowline .
 docker run --rm -p 8080:8080 prism-flowline
 ```
 
-The `Container (Publish to GHCR)` workflow publishes `ghcr.io/codeshayk/prism-flowline` on pushes to `master`, `v*` tags, and manual workflow dispatch. It uses the workflow's `GITHUB_TOKEN`; no additional registry secret is required. Pull the published image with:
+The `Container (Publish to GHCR)` workflow publishes `ghcr.io/oss-brewers/prism-flowline` on pushes to `master`, `v*` tags, and manual workflow dispatch. It uses the workflow's `GITHUB_TOKEN`; no additional registry secret is required. Pull the published image with:
 
 ```bash
-docker pull ghcr.io/codeshayk/prism-flowline:latest
+docker pull ghcr.io/oss-brewers/prism-flowline:latest
 ```
 
 The host exposes liveness and readiness probes:

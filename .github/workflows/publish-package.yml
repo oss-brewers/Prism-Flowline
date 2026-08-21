@@ -16,7 +16,7 @@ permissions:
 
 env:
   PROJECT: src/Prism.Flowline/Prism.Flowline.csproj
-  FEED: https://nuget.pkg.github.com/CodeShayk/index.json
+  FEED: https://nuget.pkg.github.com/oss-brewers/index.json
 
 jobs:
   publish:

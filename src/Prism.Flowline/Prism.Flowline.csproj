@@ -9,7 +9,7 @@
     <Version>1.0.0</Version>
     <Title>Prism Flowline - durable workflow host for Microsoft Agent Framework</Title>
     <Authors>Najaf Shaikh</Authors>
-    <Company>CodeShayk</Company>
+    <Company>oss-brewers</Company>
     <Product>Prism Flowline</Product>
     <Description>
       A headless, durable workflow host built on Microsoft Agent Framework workflows. Provides
@@ -24,8 +24,8 @@
     </Description>
     <PackageTags>workflow;orchestration;durable;agent-framework;ai;approvals;saga;dsl;json-schema;declarative;dotnet;aspnetcore</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/CodeShayk/Prism-Flowline</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/CodeShayk/Prism-Flowline</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/oss-brewers/Prism-Flowline</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/oss-brewers/Prism-Flowline</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>

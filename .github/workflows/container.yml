@@ -14,7 +14,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/codeshayk/prism-flowline
+  IMAGE_NAME: ghcr.io/oss-brewers/prism-flowline
 
 jobs:
   publish:

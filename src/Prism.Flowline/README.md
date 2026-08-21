@@ -112,7 +112,7 @@ sequences per instance, and checkpoint indexes returned oldest-first.
 
 ## Links
 
-- [Repository](https://github.com/CodeShayk/Prism-Flowline)
-- [Wiki](https://github.com/CodeShayk/Prism-Flowline/blob/master/docs/wiki.md)
+- [Repository](https://github.com/oss-brewers/Prism-Flowline)
+- [Wiki](https://github.com/oss-brewers/Prism-Flowline/blob/master/docs/wiki.md)
 
 MIT licensed.

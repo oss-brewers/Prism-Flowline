@@ -13,7 +13,7 @@ permissions:
 
 env:
   PACKAGE_PROJECT: src/Prism.Flowline/Prism.Flowline.csproj
-  FEED: https://nuget.pkg.github.com/CodeShayk/index.json
+  FEED: https://nuget.pkg.github.com/oss-brewers/index.json
 
 jobs:
   build-test:
@@ -97,7 +97,7 @@ jobs:
     if: >-
       github.event_name == 'push'
       && github.ref == 'refs/heads/master'
-      && github.repository == 'CodeShayk/Prism-Flowline'
+      && github.repository == 'oss-brewers/Prism-Flowline'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

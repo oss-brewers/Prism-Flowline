@@ -62,7 +62,7 @@ This page is the repository-level technical wiki. It documents the implementatio
 | Transport adapters | `src/Prism.Flowline.Cache.Redis` and `src/Prism.Flowline.Messaging.RabbitMQ` — each implements the framework's transport contracts and depends on nothing but the framework and its own client |
 | Service host | `src/Prism.Flowline.Service` — control-plane UI, SQL Server stores, startup wiring that selects the adapters |
 | Container | Multi-stage .NET 9 image listening on port 8080 |
-| Image publishing | GitHub Actions publishes `ghcr.io/codeshayk/prism-flowline` |
+| Image publishing | GitHub Actions publishes `ghcr.io/oss-brewers/prism-flowline` |
 
 ## Current implementation status
 
@@ -2025,7 +2025,7 @@ curl http://localhost:8080/health/live
 The workflow `.github/workflows/container.yml` publishes to:
 
 ```text
-ghcr.io/codeshayk/prism-flowline
+ghcr.io/oss-brewers/prism-flowline
 ```
 
 It authenticates with the workflow `GITHUB_TOKEN` and requires `packages: write`. It runs on pushes to `master`, `v*` tags, and manual dispatch. Tags include `latest` on `master`, the Git tag on version-tag pushes, and an immutable `sha-...` tag.
@@ -2036,7 +2036,7 @@ flowchart LR
   Manual[Manual dispatch] --> Actions
   Actions --> Buildx[Docker Buildx]
   Buildx --> Login[GHCR login with GITHUB_TOKEN]
-  Login --> Image[ghcr.io/codeshayk/prism-flowline]
+  Login --> Image[ghcr.io/oss-brewers/prism-flowline]
   Image --> Latest[latest on master]
   Image --> Version[version tag]
   Image --> Sha[sha-* immutable tag]
@@ -2045,8 +2045,8 @@ flowchart LR
 To pull the latest main image:
 
 ```bash
-docker pull ghcr.io/codeshayk/prism-flowline:latest
-docker run --rm -p 8080:8080 ghcr.io/codeshayk/prism-flowline:latest
+docker pull ghcr.io/oss-brewers/prism-flowline:latest
+docker run --rm -p 8080:8080 ghcr.io/oss-brewers/prism-flowline:latest
 ```
 
 The package visibility and first-publish behavior are governed by GitHub repository/package settings. A repository administrator may need to make the package public or grant access to consumers after the first publish.
