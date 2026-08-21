@@ -1,0 +1,11 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <ItemGroup>
+    <!-- Internal helpers (host matching, IP classification, parsers) are unit-tested directly
+         rather than only through their public callers. -->
+    <InternalsVisibleTo Include="Prism.Flowline.UnitTests" />
+    <InternalsVisibleTo Include="Prism.Flowline.IntegrationTests" />
+    <InternalsVisibleTo Include="Prism.Flowline.DslTests" />
+  </ItemGroup>
+</Project>

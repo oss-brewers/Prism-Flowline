@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The SSE writer takes an HttpContext, so the backplane test needs the ASP.NET Core types to
+         drive the real streaming path rather than a stand-in for it. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="FluentAssertions" Version="6.12.2" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.0.0" />
+    <PackageReference Include="Testcontainers.Redis" Version="4.0.0" />
+    <PackageReference Include="Testcontainers.RabbitMq" Version="4.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The adapters under test, and the framework whose contracts they implement. Deliberately
+         not the host: these tests are about the transports, and pulling in a deployable would
+         make them depend on its wiring. -->
+    <ProjectReference Include="../../src/Prism.Flowline/Prism.Flowline.csproj" />
+    <ProjectReference Include="../../src/Prism.Flowline.Cache.Redis/Prism.Flowline.Cache.Redis.csproj" />
+    <ProjectReference Include="../../src/Prism.Flowline.Messaging.RabbitMQ/Prism.Flowline.Messaging.RabbitMQ.csproj" />
+  </ItemGroup>
+</Project>

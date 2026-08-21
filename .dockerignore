@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+.git/
+.github/
+agent-framework/
+docs/
+tests/
+*.user
+*.suo

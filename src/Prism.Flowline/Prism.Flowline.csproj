@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Prism.Flowline</RootNamespace>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <IsPackable>true</IsPackable>
+    <PackageId>Prism.Flowline</PackageId>
+    <Version>1.0.0</Version>
+    <Title>Prism Flowline - durable workflow host for Microsoft Agent Framework</Title>
+    <Authors>Najaf Shaikh</Authors>
+    <Company>CodeShayk</Company>
+    <Product>Prism Flowline</Product>
+    <Description>
+      A headless, durable workflow host built on Microsoft Agent Framework workflows. Provides
+      versioned workflow registration, checkpointed execution with resume, lease-based dispatch
+      across replicas, retry and dead-stop classification driven by the workflow itself,
+      configuration-driven human approval gates, per-run and per-executor middleware pipelines,
+      sequenced event history with SSE streaming, and out-of-the-box HTTP API and LLM executors.
+      Storage and transport sit behind interfaces, with in-memory implementations included so the
+      package runs standalone. Workflows are authored in C# or as JSON documents: the bundled DSL
+      validates a document against a published JSON Schema, reports pointer-accurate diagnostics,
+      and interprets it onto the same runtime a compiled definition uses.
+    </Description>
+    <PackageTags>workflow;orchestration;durable;agent-framework;ai;approvals;saga;dsl;json-schema;declarative;dotnet;aspnetcore</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/CodeShayk/Prism-Flowline</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/CodeShayk/Prism-Flowline</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <Copyright>Copyright (c) 2025 Najaf Shaikh</Copyright>
+
+    <!-- Ship XML docs: the public surface is contract-heavy and the remarks explain invariants
+         (checkpoint ordering, gate precedence, at-least-once semantics) that callers must respect. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- One copy of the schema. The published file under docs/ is the source, embedded from there,
+         so the schema an editor reads and the schema the host enforces cannot drift. -->
+    <EmbeddedResource Include="../../docs/schema/prism-workflow-dsl-1.0.json"
+                      LogicalName="Prism.Flowline.Dsl.Schema.prism-workflow-dsl-1.0.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The library owns the HTTP API (endpoints, SSE) but no UI, so it needs the ASP.NET Core
+         shared framework without Razor. The control plane lives in the deployable host. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="$(AgentFrameworkVersion)" />
+    <!-- Backs the DSL's schema validation; the declarative front end ships in this package. -->
+    <PackageReference Include="JsonSchema.Net" Version="7.3.4" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.7.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+  </ItemGroup>
+</Project>

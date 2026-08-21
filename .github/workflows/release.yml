@@ -1,0 +1,84 @@
+name: Release (Stable)
+
+on:
+  push:
+    branches:
+    - release/**
+    - release
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  
+jobs:
+  release:  
+    runs-on: ubuntu-latest
+    env:
+      working-directory: ${{ github.workspace }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Install GitVersion
+        uses: gittools/actions/gitversion/setup@v0.9.15
+        with:
+          versionSpec: 5.x
+
+      - name: Determine Version
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v0.9.15
+        with:
+          useConfigFile: true
+
+      - name: Display Version
+        run: |
+          echo "FullSemVer: ${{ steps.gitversion.outputs.FullSemVer }}"
+          echo "NuGetVersionV2: ${{ steps.gitversion.outputs.NuGetVersionV2 }}"
+          echo "IsPreRelease? ${{ steps.gitversion.outputs.PreReleaseTag != '' }}"
+
+      - name: Fail if Pre-release on main
+        if: ${{ steps.gitversion.outputs.PreReleaseTag != '' }}
+        run: |
+          echo "Unexpected pre-release on main. Check GitVersion config."
+          exit 1
+
+      - name: Restore
+        run: dotnet restore
+        working-directory: '${{ env.working-directory }}'
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+        working-directory: '${{ env.working-directory }}'
+
+      # Same reasoning as ci.yml: the broker suite skips itself without a container runtime, and a
+      # release must not be cut from a run that quietly tested less than the CI leg did.
+      - name: Verify container runtime
+        run: docker version
+
+      - name: Pre-pull test container images
+        run: |
+          docker pull redis:7-alpine
+          docker pull rabbitmq:4-alpine
+
+      - name: Test
+        run: dotnet test -c Release --no-build
+        working-directory: '${{ env.working-directory }}'
+        env:
+          PRISM_REQUIRE_DOCKER: 'true'
+
+      - name: Create Tag (if missing)
+        run: |
+          TAG="v${{ steps.gitversion.outputs.MajorMinorPatch }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists."
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Prism.Flowline.Messaging.RabbitMQ</RootNamespace>
+    <AssemblyName>Prism.Flowline.Messaging.RabbitMQ</AssemblyName>
+    <Description>RabbitMQ adapter for Prism.Flowline: a topic-exchange workflow event broker.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The framework only. An adapter that referenced a host would tie the transport to one
+         deployment, which is the whole thing this split exists to prevent. -->
+    <ProjectReference Include="../Prism.Flowline/Prism.Flowline.csproj" />
+    <PackageReference Include="RabbitMQ.Client" Version="7.2.2" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftExtensionsVersion)" />
+  </ItemGroup>
+</Project>
