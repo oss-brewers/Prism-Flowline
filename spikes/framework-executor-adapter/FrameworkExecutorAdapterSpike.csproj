@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Throw-away spike for phase 4.1 of docs/implementation/09-embedded-host-implementation-plan.md.
+    Deliberately outside Prism.Flowline.slnx and independent of the library: it asks what Agent
+    Framework itself permits an adapter to do. Run with `dotnet test` from this folder. The findings
+    are in REPORT.md beside it.
+  -->
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Agents.AI.Workflows" Version="$(AgentFrameworkVersion)" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

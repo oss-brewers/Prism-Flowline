@@ -10,35 +10,30 @@ Prism Flowline is a .NET workflow runtime and HTTP host for durable, observable 
 
 The runtime is built on Microsoft Agent Framework workflows. Stores are exposed through interfaces so the in-memory implementation can be replaced by durable persistence without changing workflow definitions.
 
-The solution is split in two. `Prism.Flowline` is the reusable, headless framework: runtime, dispatch, executors, middleware, in-memory store defaults, and the HTTP API. `Prism.Flowline.Service` is the deployable host: the control-plane UI, the SQL Server and Redis implementations, and the startup wiring that selects them. Referencing the library alone gives a working API host with no UI and no infrastructure dependencies.
+The solution is split in two. `Prism.Flowline` is the reusable, headless framework: runtime, dispatch, executors, middleware, in-memory store defaults, and the HTTP API. `Prism.Flowline.Service` is the deployable host: the control-plane UI and the startup wiring that selects the infrastructure adapters — `Prism.Flowline.Stores.SqlServer`, `Prism.Flowline.Cache.Redis` and `Prism.Flowline.Messaging.RabbitMQ`, each a project of its own beside the framework. Referencing the library alone gives a working API host with no UI and no infrastructure dependencies. `Prism.Flowline.Testing` holds the store contracts every implementation is held to, so a new provider can prove itself against the same cases the in-memory and SQL Server stores pass.
 
 ## Install
 
-`Prism.Flowline` — the framework library — is published to GitHub Packages:
+`Prism.Flowline`, the framework library, is published to nuget.org. No feed configuration and no credential are needed:
 
 ```bash
-dotnet add package Prism.Flowline --version 1.0.0
+dotnet add package Prism.Flowline
 ```
 
-Add the feed once, authenticating with a PAT that has `read:packages`:
+A storage provider's own tests can use the store contracts, published alongside:
 
 ```bash
-dotnet nuget add source https://nuget.pkg.github.com/oss-brewers/index.json   --name github --username <you> --password <token> --store-password-in-clear-text
+dotnet add package Prism.Flowline.Testing
 ```
 
-The package is the headless framework only; `Prism.Flowline.Service` is the reference host and is not
-published.
+The packages are the headless framework and its contract kit only. `Prism.Flowline.Service` is the reference host and the infrastructure adapters are not published.
 
-Two workflows publish it:
-
-| Workflow | Trigger | Version |
+| Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `CI (Build, Test and Publish)` | push to `master` | `<gitversion>-ci.<run>` prerelease |
-| `Package (Publish to GitHub Packages)` | `v*` tag or manual dispatch | stable, from the tag or project file |
+| `CI (Build, Test and Pack)` | every push and pull request | Builds, tests, and packs both packages as a `<gitversion>-ci.<run>` workflow artifact. Never publishes |
+| `Package (Publish to nuget.org)` | `v*` tag or manual dispatch | Tests, then publishes both packages and their symbols to nuget.org through trusted publishing |
 
-Pull requests and feature branches build and test but never publish. CI builds carry a `-ci.<run>`
-suffix so they sort below the stable release and a plain version number always means "tagged
-release".
+nuget.org versions are permanent, so nothing is published per commit. A prerelease for integration work is a prerelease tag (`v1.1.0-beta.1`).
 
 ## Requirements
 
@@ -218,7 +213,9 @@ app.Run();
 | Runtime, dispatch, executors, middleware, HTTP API, in-memory defaults, in-process event broker | `Prism.Flowline` |
 | Redis Streams bus, Redis broker, control channel | `Prism.Flowline.Cache.Redis` |
 | RabbitMQ topic-exchange broker | `Prism.Flowline.Messaging.RabbitMQ` |
-| Razor Pages, SQL Server stores, startup wiring that selects the above | your service (`Prism.Flowline.Service`) |
+| SQL Server stores (EF Core) | `Prism.Flowline.Stores.SqlServer` |
+| The rules every store must keep, runnable against any implementation | `Prism.Flowline.Testing` |
+| Razor Pages, the SQLite audit-record store, startup wiring that selects the above | your service (`Prism.Flowline.Service`) |
 
 The library carries no Razor, MVC, Entity Framework, or Redis dependency, and an architecture test in the integration suite fails the build if one drifts back in. Splitting a UI host out later is therefore a matter of moving Razor and infrastructure projects, not of untangling the runtime.
 
@@ -622,14 +619,17 @@ at startup.
 | Project | Responsibility |
 | --- | --- |
 | `src/Prism.Flowline` | Headless framework: workflow runtime, dispatch, executors, middleware, in-memory store defaults, HTTP API endpoints, and the declarative DSL front end |
+| `src/Prism.Flowline.Testing` | The store contracts: one class per store interface, framework-agnostic, packable for provider authors |
 | `src/Prism.Flowline.Cache.Redis` | Redis adapters: Streams event bus, workflow event broker, cross-replica control channel |
 | `src/Prism.Flowline.Messaging.RabbitMQ` | RabbitMQ adapter: topic-exchange workflow event broker |
-| `src/Prism.Flowline.Service` | Deployable host: control-plane UI, SQL Server stores, the SQLite audit-record store, startup wiring, and the example workflow |
-| `tests/Prism.Flowline.UnitTests` | Unit coverage for runtime behavior; references the library only |
+| `src/Prism.Flowline.Stores.SqlServer` | SQL Server stores over EF Core: instances, events, logs, approvals, gate policies, audit, blobs, checkpoints |
+| `src/Prism.Flowline.Service` | Deployable host: control-plane UI, the SQLite audit-record store, startup wiring, and the example workflow |
+| `tests/Prism.Flowline.UnitTests` | Unit coverage for runtime behavior, and every store contract against the in-memory stores |
 | `tests/Prism.Flowline.DslTests` | Expression, validation and interpreter coverage for the DSL |
 | `tests/Prism.Flowline.IntegrationTests` | HTTP, control-plane, and architecture-boundary coverage against the real host |
 | `tests/Prism.Flowline.ChaosTests` | Failure and lifecycle resilience coverage |
 | `tests/Prism.Flowline.BrokerTests` | The distributed brokers against real Redis and RabbitMQ, via Testcontainers |
+| `tests/Prism.Flowline.StoreTests` | Every store contract against the SQL Server stores on a real SQL Server, via Testcontainers |
 | `tests/Prism.Flowline.LoadTests` | Load-oriented test project |
 
 Folders inside each project:
@@ -637,8 +637,8 @@ Folders inside each project:
 ```
 src/Prism.Flowline/               src/Prism.Flowline.Service/
   Abstractions/                 ControlPlane/      Razor Pages backing services
-  Api/                          Infrastructure/    SQL Server stores
-  Core/                           Auditing/        audit-record store and migrations
+  Api/                          Infrastructure/
+  Core/                           Auditing/        SQLite audit-record store and migrations
   Dispatch/                     Pages/             control-plane Razor Pages
   Dsl/                          Workflows/         workflow definitions hosted here
     Expressions/                  ExampleOrder/    the audit-capable example workflow
@@ -655,13 +655,22 @@ src/Prism.Flowline.Cache.Redis/      src/Prism.Flowline.Messaging.RabbitMQ/
   RedisCacheAdapter.cs                  RabbitMqMessagingAdapter.cs
   RedisNotificationBus.cs               RabbitMqDomainEventBroker.cs
   RedisServiceCollectionExtensions.cs   RabbitMqServiceCollectionExtensions.cs
+
+src/Prism.Flowline.Stores.SqlServer/       src/Prism.Flowline.Testing/
+  SqlServerStores.cs                         StoreContractContext.cs, ContractCase.cs
+  SqlServerInfrastructureStores.cs           InstanceStoreContract.cs, EventStoreContract.cs, …
+  SqlServerServiceCollectionExtensions.cs    README.md   how a provider writes its test class
 ```
 
 Each adapter references `Prism.Flowline` and its own client library — nothing else. It does not reference
-the host, and the two adapters do not reference each other, so choosing one never drags in the
-other's dependency. Architecture tests in the integration suite enforce all three rules, along with
+the host, and the adapters do not reference each other, so choosing one never drags in another's
+dependency. Architecture tests in the integration suite enforce all three rules, along with
 the library carrying no Razor, MVC, Entity Framework, or transport dependency, and framework
 extension points staying out of the host shell.
+
+The SQL Server stores need culture data: `Microsoft.Data.SqlClient` does not run in invariant
+globalization mode, so a host that uses them sets `<InvariantGlobalization>false</InvariantGlobalization>`
+(the reference host does), and `AddSqlServerStores` refuses to register in a process that has not.
 
 ## Test Coverage
 
@@ -680,3 +689,11 @@ dotnet test tests/Prism.Flowline.BrokerTests/Prism.Flowline.BrokerTests.csproj
 ```
 
 Without a container runtime these tests report as **skipped** rather than failed, so a machine or CI leg without Docker still gets a green suite. Watch for that in the output: a run reporting skips has verified nothing about the transports.
+
+`Prism.Flowline.StoreTests` does the same for storage: every contract in `Prism.Flowline.Testing` against the SQL Server stores, on a SQL Server that Testcontainers starts, with the same skip rule. The same contracts run against the in-memory stores in the unit suite, so the two implementations are held to one set of cases:
+
+```bash
+dotnet test tests/Prism.Flowline.StoreTests/Prism.Flowline.StoreTests.csproj
+```
+
+CI sets `PRISM_REQUIRE_DOCKER`, which turns both suites' skips into failures.

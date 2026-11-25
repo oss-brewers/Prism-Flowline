@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Prism.Flowline.Stores.SqlServer</RootNamespace>
+    <AssemblyName>Prism.Flowline.Stores.SqlServer</AssemblyName>
+    <Description>SQL Server stores for Prism.Flowline: instances, events, logs, approvals, gate policies, audit, blobs and checkpoints over EF Core.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The framework only. Stores that referenced a host would tie the storage to one deployment,
+         and the contract suite in Prism.Flowline.StoreTests could not run them without booting it. -->
+    <ProjectReference Include="../Prism.Flowline/Prism.Flowline.csproj" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.15" />
+  </ItemGroup>
+</Project>

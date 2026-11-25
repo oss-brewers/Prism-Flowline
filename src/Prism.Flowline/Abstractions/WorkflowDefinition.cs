@@ -107,7 +107,7 @@ public sealed class WorkflowBuildContext
     /// <summary>
     /// The audit hook for this instance, present when the definition implements
     /// <see cref="IAuditedWorkflowDefinition"/>. Available here so a definition can hand it to the
-    /// executors it constructs; executors attached with <see cref="Node"/> also reach it through
+    /// executors it constructs; executors attached with <see cref="Node(IHostExecutor, Action{ApprovalGateBuilder}?)"/> also reach it through
     /// <see cref="HostExecutorRuntime.Audit"/>.
     /// </summary>
     public IWorkflowAuditRecorder? Audit { get; }
@@ -132,6 +132,54 @@ public sealed class WorkflowBuildContext
     {
         ArgumentNullException.ThrowIfNull(executor);
 
+        return AttachNode(executor, gate, executor.GetType().Name, executor.InputType.Name, executor.OutputType.Name);
+    }
+
+    /// <inheritdoc cref="Node(IHostExecutor, Action{ApprovalGateBuilder}?)"/>
+    /// <remarks>
+    /// Present so a host executor passed as itself binds here rather than to the
+    /// <see cref="Executor"/> overload, which every host executor also matches.
+    /// </remarks>
+    public ExecutorBinding Node<TExecutor>(TExecutor executor, Action<ApprovalGateBuilder>? gate = null)
+        where TExecutor : IHostExecutor
+        => Node((IHostExecutor)executor, gate);
+
+    /// <summary>
+    /// Attaches an Agent Framework executor the author did not write as a host executor — a canvas
+    /// node, a library's executor — so it can be gated, runs inside the executor middleware pipeline,
+    /// and appears in the catalog as configurable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The executor is wrapped by an adapter with the same id and the same accepted, sent and yielded
+    /// types, so the graph is wired exactly as it would be with <see cref="RawNode"/>, and the run
+    /// records the same events. Its lifecycle hooks are forwarded, so state it keeps in fields and
+    /// saves in its checkpoint hooks survives a resume.
+    /// </para>
+    /// <para>
+    /// For an executor instance only. <c>AIAgent</c> bindings, request ports and sub-workflows are
+    /// factories rather than instances: bind those with <see cref="RawNode"/>, and put
+    /// <see cref="Gate{TMessage}"/> in front of one to require approval before it runs.
+    /// </para>
+    /// </remarks>
+    public ExecutorBinding Node(Executor executor, Action<ApprovalGateBuilder>? gate = null)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+
+        // A host executor reached here through a variable typed as Executor. Wrapping it would gate it
+        // twice and run its middleware twice.
+        if (executor is IHostExecutor host)
+        {
+            return Node(host, gate);
+        }
+
+        var adapter = new Core.FrameworkExecutorAdapter(executor);
+        return AttachNode(adapter, gate, executor.GetType().Name, adapter.InputTypeName, adapter.OutputTypeName);
+    }
+
+    private ExecutorBinding AttachNode(
+        IHostExecutor executor, Action<ApprovalGateBuilder>? gate, string executorType, string? inputType, string? outputType)
+    {
         ApprovalGate configured = ApprovalGate.Autonomous;
         if (gate is not null)
         {
@@ -141,16 +189,37 @@ public sealed class WorkflowBuildContext
         }
 
         _gates[executor.Id] = configured;
-        Record(new WorkflowNodeDescriptor(
-            executor.Id, executor.GetType().Name, executor.InputType.Name, executor.OutputType.Name,
-            configured, Configurable: true));
+        Record(new WorkflowNodeDescriptor(executor.Id, executorType, inputType, outputType, configured, Configurable: true));
 
         return _attach(executor, configured);
     }
 
     /// <summary>
+    /// Puts an approval gate in front of whatever the author wires after it: an identity node that
+    /// passes its <typeparamref name="TMessage"/> on once the gate allows it.
+    /// </summary>
+    /// <remarks>
+    /// The way to require approval before a node that cannot carry a gate itself — a raw framework
+    /// executor, an <c>AIAgent</c> binding, a sub-workflow. Nothing after it runs until the gate has
+    /// decided, an approver may amend the message when the gate permits it, and a tenant can configure
+    /// it like any other node. It is a node of its own, so the graph gains one id and one pair of
+    /// executor events; it does not bring executor middleware to the node behind it.
+    /// </remarks>
+    /// <param name="id">The gate node's own id, distinct from the node it protects.</param>
+    /// <param name="gate">The gate, as <see cref="Node(IHostExecutor, Action{ApprovalGateBuilder}?)"/> takes it.</param>
+    public ExecutorBinding Gate<TMessage>(string id, Action<ApprovalGateBuilder> gate)
+        where TMessage : class
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        ArgumentNullException.ThrowIfNull(gate);
+
+        return Node(new Executors.GateExecutor<TMessage>(id), gate);
+    }
+
+    /// <summary>
     /// Escape hatch for raw framework executors and <c>AIAgent</c> bindings. These participate in the
-    /// graph but not in executor middleware, and cannot be approval-gated.
+    /// graph but not in executor middleware, and cannot be approval-gated themselves; put
+    /// <see cref="Gate{TMessage}"/> in front of one to require approval before it runs.
     /// </summary>
     public ExecutorBinding RawNode(ExecutorBinding binding, Action<ApprovalGateBuilder>? gate = null)
     {
@@ -160,7 +229,8 @@ public sealed class WorkflowBuildContext
         {
             throw new InvalidOperationException(
                 $"Executor '{binding.Id}' is bound via RawNode and cannot be approval-gated. " +
-                "Approval gates require a HostExecutor<TIn, TOut>; convert the executor or remove the gate.");
+                $"Wire context.Gate<TMessage>(\"approve-{binding.Id}\", gate => ...) in front of it to require " +
+                "approval before it runs, or make it a HostExecutor<TIn, TOut> and attach it with Node.");
         }
 
         Record(new WorkflowNodeDescriptor(

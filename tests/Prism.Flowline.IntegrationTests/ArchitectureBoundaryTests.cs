@@ -9,6 +9,7 @@ using Prism.Flowline.Service.ControlPlane;
 using Prism.Flowline.Core;
 using Prism.Flowline.Persistence;
 using Prism.Flowline.Service;
+using Prism.Flowline.Stores.SqlServer;
 using FluentAssertions;
 using Xunit;
 
@@ -16,9 +17,9 @@ namespace Prism.Flowline.IntegrationTests;
 
 /// <summary>
 /// Locks in the split between the reusable framework and the deployable host: <c>Prism.Flowline</c>
-/// carries the headless workflow host — runtime, dispatch and HTTP API — while
-/// <c>Prism.Flowline.Service</c> contributes the user interface, the environment-specific
-/// infrastructure, and the wiring that selects it.
+/// carries the headless workflow host — runtime, dispatch and HTTP API — the adapter projects carry
+/// the infrastructure, and <c>Prism.Flowline.Service</c> contributes the user interface and the
+/// wiring that selects that infrastructure.
 /// </summary>
 public class ArchitectureBoundaryTests
 {
@@ -26,7 +27,15 @@ public class ArchitectureBoundaryTests
     private static readonly Assembly Host = typeof(PrismServiceCollectionExtensions).Assembly;
     private static readonly Assembly RedisAdapter = typeof(RedisNotificationBus).Assembly;
     private static readonly Assembly RabbitMqAdapter = typeof(RabbitMqDomainEventBroker).Assembly;
+    private static readonly Assembly SqlServerAdapter = typeof(SqlServerInstanceStore).Assembly;
     private static readonly Assembly Dsl = typeof(Prism.Flowline.Dsl.Interpretation.DslMessage).Assembly;
+
+    private static readonly Dictionary<string, Assembly> Adapters = new(StringComparer.Ordinal)
+    {
+        ["Prism.Flowline.Cache.Redis"] = RedisAdapter,
+        ["Prism.Flowline.Messaging.RabbitMQ"] = RabbitMqAdapter,
+        ["Prism.Flowline.Stores.SqlServer"] = SqlServerAdapter
+    };
 
     [Fact]
     public void The_library_and_the_host_are_separate_assemblies()
@@ -78,15 +87,17 @@ public class ArchitectureBoundaryTests
     }
 
     [Fact]
-    public void Storage_infrastructure_lives_in_the_host()
+    public void Sql_server_storage_lives_in_its_own_adapter_assembly()
     {
-        string[] hostTypes = Host.GetTypes()
+        // Deployment-specific, but not deployment-owned: a store inside the host could only be run
+        // by booting the host, which is why the contract suite references this assembly directly.
+        string[] storeTypes = SqlServerAdapter.GetTypes()
             .Where(t => t.IsClass && !t.IsNested)
             .Select(t => t.Name)
             .ToArray();
 
-        hostTypes.Should().Contain(n => n.StartsWith("SqlServer", StringComparison.Ordinal),
-            "SQL Server stores are deployment-specific");
+        storeTypes.Should().Contain(n => n.StartsWith("SqlServer", StringComparison.Ordinal),
+            "SQL Server stores are an adapter, like the transports");
     }
 
     [Fact]
@@ -96,13 +107,16 @@ public class ArchitectureBoundaryTests
         // it, and forces every consumer of that host to take its client library.
         RedisAdapter.GetName().Name.Should().Be("Prism.Flowline.Cache.Redis");
         RabbitMqAdapter.GetName().Name.Should().Be("Prism.Flowline.Messaging.RabbitMQ");
+        SqlServerAdapter.GetName().Name.Should().Be("Prism.Flowline.Stores.SqlServer");
 
         typeof(RedisNotificationBus).Assembly.Should().BeSameAs(RedisAdapter);
         typeof(RabbitMqDomainEventBroker).Assembly.Should().BeSameAs(RabbitMqAdapter);
+        typeof(SqlServerServiceCollectionExtensions).Assembly.Should().BeSameAs(SqlServerAdapter);
 
         Host.GetTypes().Select(t => t.Name).Should()
             .NotContain(n => n.StartsWith("Redis", StringComparison.Ordinal)
-                          || n.StartsWith("RabbitMq", StringComparison.Ordinal),
+                          || n.StartsWith("RabbitMq", StringComparison.Ordinal)
+                          || n.StartsWith("SqlServer", StringComparison.Ordinal),
                 "an adapter left behind in the host would be the copy nobody updates");
     }
 
@@ -176,9 +190,10 @@ public class ArchitectureBoundaryTests
     [Theory]
     [InlineData("Prism.Flowline.Cache.Redis")]
     [InlineData("Prism.Flowline.Messaging.RabbitMQ")]
+    [InlineData("Prism.Flowline.Stores.SqlServer")]
     public void An_adapter_depends_on_the_framework_and_nothing_else_of_ours(string adapterName)
     {
-        Assembly adapter = adapterName == "Prism.Flowline.Cache.Redis" ? RedisAdapter : RabbitMqAdapter;
+        Assembly adapter = Adapters[adapterName];
 
         string[] references = [.. adapter.GetReferencedAssemblies().Select(a => a.Name!)];
 
@@ -187,20 +202,21 @@ public class ArchitectureBoundaryTests
         references.Should().NotContain("Prism.Flowline.Service",
             "an adapter that referenced a host would be tied to one deployment");
 
-        // The two adapters must not know about each other, or choosing one would drag in the
-        // other's client library.
-        references.Should().NotContain(
-            adapterName == "Prism.Flowline.Cache.Redis" ? "Prism.Flowline.Messaging.RabbitMQ" : "Prism.Flowline.Cache.Redis",
-            "transports are alternatives, not collaborators");
+        // The adapters must not know about each other, or choosing one would drag in another's
+        // client library.
+        references.Should().NotContain(Adapters.Keys.Where(name => name != adapterName),
+            "adapters are alternatives or neighbours, not collaborators");
     }
 
     [Theory]
     [InlineData("Prism.Flowline.Cache.Redis", "StackExchange.Redis", "RabbitMQ.Client")]
     [InlineData("Prism.Flowline.Messaging.RabbitMQ", "RabbitMQ.Client", "StackExchange.Redis")]
+    [InlineData("Prism.Flowline.Stores.SqlServer", "Microsoft.EntityFrameworkCore.SqlServer", "StackExchange.Redis")]
+    [InlineData("Prism.Flowline.Stores.SqlServer", "Microsoft.EntityFrameworkCore.SqlServer", "RabbitMQ.Client")]
     public void An_adapter_carries_only_its_own_client_library(
         string adapterName, string expected, string forbidden)
     {
-        Assembly adapter = adapterName == "Prism.Flowline.Cache.Redis" ? RedisAdapter : RabbitMqAdapter;
+        Assembly adapter = Adapters[adapterName];
 
         string[] references = [.. adapter.GetReferencedAssemblies().Select(a => a.Name!)];
 
@@ -212,14 +228,14 @@ public class ArchitectureBoundaryTests
     [Fact]
     public void Every_framework_contract_the_host_implements_is_an_infrastructure_adapter()
     {
-        // The host may implement storage and transport contracts — that is its whole job — but each
-        // such type must be a named adapter for a specific technology, not framework logic that
-        // drifted back into the deployable.
+        // The host may still implement a storage contract — the SQLite audit-record store lives
+        // here with its migrations — but each such type must be a named adapter for a specific
+        // technology, not framework logic that drifted back into the deployable.
         Type[] contracts =
         [
             typeof(IInstanceStore), typeof(IEventStore), typeof(ILogStore), typeof(IApprovalStore),
             typeof(IGatePolicyStore), typeof(IAuditStore), typeof(IBlobStore), typeof(INotificationBus),
-            typeof(IDomainEventBroker), typeof(IDomainEventSubscriptionStore)
+            typeof(IDomainEventBroker), typeof(IDomainEventSubscriptionStore), typeof(IAuditRecordStore)
         ];
 
         string[] adapters = Host.GetTypes()
@@ -228,13 +244,13 @@ public class ArchitectureBoundaryTests
             .Select(t => t.Name)
             .ToArray();
 
-        adapters.Should().NotBeEmpty("the host exists to supply concrete infrastructure");
+        adapters.Should().NotBeEmpty("the host supplies the audit-record store it configures");
 
         // The prefix is the technology the adapter speaks. Adding one here is a deliberate act;
         // an adapter named for what it does rather than what it talks to is framework logic that
-        // has drifted back into the deployable. Transports are not on this list because they no
-        // longer live in the host at all.
-        string[] technologies = ["SqlServer", "Sqlite"];
+        // has drifted back into the deployable. Transports and SQL Server are not on this list
+        // because they no longer live in the host at all; the SQLite audit-record store does.
+        string[] technologies = ["Sqlite"];
 
         adapters.Should().OnlyContain(
             n => technologies.Any(t => n.StartsWith(t, StringComparison.Ordinal)));

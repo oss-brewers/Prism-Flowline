@@ -2,6 +2,11 @@
   <PropertyGroup>
     <RootNamespace>Prism.Flowline.Service</RootNamespace>
     <AssemblyName>Prism.Flowline.Service</AssemblyName>
+
+    <!-- Microsoft.Data.SqlClient will not open a connection in invariant globalization mode, which
+         Directory.Build.props turns on for everything else; with it on, a host configured for SQL
+         Server failed its first store call. AddSqlServerStores now refuses to register under it. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
@@ -12,7 +17,10 @@
     <ProjectReference Include="../Prism.Flowline.Cache.Redis/Prism.Flowline.Cache.Redis.csproj" />
     <ProjectReference Include="../Prism.Flowline.Messaging.RabbitMQ/Prism.Flowline.Messaging.RabbitMQ.csproj" />
 
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.15" />
+    <!-- Storage is an adapter too, selected the same way: unused unless its connection string is set. -->
+    <ProjectReference Include="../Prism.Flowline.Stores.SqlServer/Prism.Flowline.Stores.SqlServer.csproj" />
+
+    <!-- The audit-record store stays here: it is SQLite with its own migrations, not a SQL Server store. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15">
       <PrivateAssets>all</PrivateAssets>

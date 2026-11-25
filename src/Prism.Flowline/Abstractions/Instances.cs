@@ -182,6 +182,21 @@ public static class WorkflowEventTypes
 
     /// <summary>One per LLM invocation: model, tokens, cost, latency, finish reason.</summary>
     public const string LlmCompleted = "llm.completed";
+
+    /// <summary>
+    /// One streamed update from an Agent Framework agent bound into the graph: executor id, text,
+    /// role and message id. Stream-only, like <see cref="LlmDelta"/>: the complete text arrives in
+    /// <see cref="AgentResponse"/>, and a replayed fragment would mean nothing.
+    /// </summary>
+    /// <remarks>
+    /// Its own name rather than a reuse of <see cref="LlmDelta"/>, which belongs to Flowline's own
+    /// LLM executor and pairs with <see cref="LlmCompleted"/> — a completion an arbitrary agent does
+    /// not emit.
+    /// </remarks>
+    public const string AgentUpdate = "agent.update";
+
+    /// <summary>An agent's complete response: executor id, text, and token usage when reported.</summary>
+    public const string AgentResponse = "agent.response";
     public const string RequestPending = "request.pending";
     public const string ApprovalRequested = "approval.requested";
     public const string ApprovalDecided = "approval.decided";
@@ -200,7 +215,7 @@ public static class WorkflowEventTypes
     {
         WorkflowStarted, SuperstepStarted, SuperstepCompleted,
         ExecutorInvoked, ExecutorCompleted, ExecutorFailed,
-        LlmDelta, LlmCompleted, RequestPending,
+        LlmDelta, LlmCompleted, AgentUpdate, AgentResponse, RequestPending,
         ApprovalRequested, ApprovalDecided, ApprovalExpired,
         WorkflowWarning, WorkflowOutput, WorkflowTerminated,
         InstanceCancelled, InstanceRerunRequested, InstanceSuspended,

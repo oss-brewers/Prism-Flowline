@@ -112,7 +112,8 @@ public sealed class GateConfigurationService : IGateConfigurationService
     public async Task<GateConfigResult> GetNodesAsync(
         string workflowName, string? version, string tenantId, CancellationToken cancellationToken)
     {
-        WorkflowDescriptor? descriptor = Resolve(workflowName, version);
+        WorkflowDescriptor? descriptor = await ResolveAsync(workflowName, version, tenantId, cancellationToken)
+            .ConfigureAwait(false);
         return descriptor is null
             ? new GateConfigResult(GateConfigResultKind.UnknownWorkflow)
             : new GateConfigResult(GateConfigResultKind.Ok,
@@ -125,7 +126,8 @@ public sealed class GateConfigurationService : IGateConfigurationService
     {
         ArgumentNullException.ThrowIfNull(policies);
 
-        WorkflowDescriptor? descriptor = Resolve(workflowName, version);
+        WorkflowDescriptor? descriptor = await ResolveAsync(workflowName, version, tenantId, cancellationToken)
+            .ConfigureAwait(false);
         if (descriptor is null)
         {
             return new GateConfigResult(GateConfigResultKind.UnknownWorkflow);
@@ -201,7 +203,8 @@ public sealed class GateConfigurationService : IGateConfigurationService
         string workflowName, string? version, string tenantId, string executorId,
         ClaimsPrincipal? user, CancellationToken cancellationToken)
     {
-        WorkflowDescriptor? descriptor = Resolve(workflowName, version);
+        WorkflowDescriptor? descriptor = await ResolveAsync(workflowName, version, tenantId, cancellationToken)
+            .ConfigureAwait(false);
         if (descriptor is null)
         {
             return new GateConfigResult(GateConfigResultKind.UnknownWorkflow);
@@ -227,12 +230,20 @@ public sealed class GateConfigurationService : IGateConfigurationService
             await ProjectAsync(descriptor, tenantId, cancellationToken).ConfigureAwait(false));
     }
 
-    private WorkflowDescriptor? Resolve(string workflowName, string? version)
-        => _registry.Resolve(
+    /// <summary>
+    /// Resolved for the tenant whose policy is being read or written, so another tenant's private
+    /// workflow is as unknown here as one that does not exist. The all-tenants scope sees every
+    /// definition, which is what lets an operator set a host-wide policy on one.
+    /// </summary>
+    private ValueTask<WorkflowDescriptor?> ResolveAsync(
+        string workflowName, string? version, string tenantId, CancellationToken cancellationToken)
+        => _registry.ResolveAsync(
             workflowName,
             string.IsNullOrWhiteSpace(version) || string.Equals(version, "latest", StringComparison.OrdinalIgnoreCase)
                 ? null
-                : version);
+                : version,
+            Tenancy.IsAllTenants(tenantId) ? Tenancy.AllTenants : tenantId,
+            cancellationToken);
 
     private async Task<WorkflowNodesDto> ProjectAsync(
         WorkflowDescriptor descriptor, string tenantId, CancellationToken cancellationToken)

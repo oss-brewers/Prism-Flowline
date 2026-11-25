@@ -35,6 +35,25 @@ public sealed class WorkflowHostBuilder
         return this;
     }
 
+    /// <summary>
+    /// Registers a source the registry asks for workflows the host was not composed with. Sources
+    /// are asked in registration order, after the start-up definitions; see
+    /// <see cref="IWorkflowDefinitionSource"/> for the promises one makes.
+    /// </summary>
+    public WorkflowHostBuilder AddWorkflowSource<TSource>() where TSource : class, IWorkflowDefinitionSource
+    {
+        Services.AddSingleton<IWorkflowDefinitionSource, TSource>();
+        return this;
+    }
+
+    /// <inheritdoc cref="AddWorkflowSource{TSource}"/>
+    public WorkflowHostBuilder AddWorkflowSource(IWorkflowDefinitionSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        Services.AddSingleton(source);
+        return this;
+    }
+
     public WorkflowHostBuilder AddWorkflowMiddleware<TMiddleware>() where TMiddleware : class, IWorkflowMiddleware
     {
         Services.AddSingleton<IWorkflowMiddleware, TMiddleware>();
@@ -182,10 +201,14 @@ public static class HostBuilderExtensions
         // Runtime
         services.TryAddSingleton<IWorkflowRegistry>(sp =>
         {
-            var registry = new WorkflowRegistry(sp.GetServices<IWorkflowDefinition>());
+            var registry = new WorkflowRegistry(
+                sp.GetServices<IWorkflowDefinition>(),
+                sp.GetServices<IWorkflowDefinitionSource>(),
+                sp.GetRequiredService<IOptions<WorkflowHostOptions>>().Value.Registry);
 
             // A workflow declaring a notification name it could never legally emit should fail
-            // startup, not surprise someone in production.
+            // startup, not surprise someone in production. Sourced definitions get the same check
+            // from the registry as each one arrives.
             foreach (WorkflowDescriptor descriptor in registry.All)
             {
                 if (descriptor.Definition is INotifyingWorkflow notifying)

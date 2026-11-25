@@ -137,40 +137,7 @@ public class AllTenantsGatePolicyTests
             "'0' is the all-tenants scope, not a tenant named zero");
     }
 
-    [Fact]
-    public async Task An_all_tenants_policy_applies_where_a_tenant_has_none_of_its_own()
-    {
-        var store = new InMemoryGatePolicyStore();
-        await store.SetAsync(Tenancy.Normalize(Tenancy.AllTenants), "w", "1.0.0", "n", Gate, default);
-
-        ApprovalGate? resolved = await store.FindAsync("acme", "w", "1.0.0", "n", null, default);
-
-        resolved.Should().NotBeNull("a tenant with no policy of its own inherits the all-tenants one");
-        resolved!.Mode.Should().Be(ExecutionMode.RequireApproval);
-    }
-
-    [Fact]
-    public async Task A_tenants_own_policy_wins_over_the_all_tenants_one()
-    {
-        var store = new InMemoryGatePolicyStore();
-
-        await store.SetAsync(Tenancy.Normalize("0"), "w", "1.0.0", "n", Gate, default);
-        await store.SetAsync("acme", "w", "1.0.0", "n",
-            new ApprovalGate { Mode = ExecutionMode.Autonomous }, default);
-
-        ApprovalGate? resolved = await store.FindAsync("acme", "w", "1.0.0", "n", null, default);
-
-        resolved!.Mode.Should().Be(ExecutionMode.Autonomous, "the more specific scope wins");
-    }
-
-    [Fact]
-    public async Task Another_tenant_is_unaffected_by_a_tenant_specific_policy()
-    {
-        var store = new InMemoryGatePolicyStore();
-        await store.SetAsync("acme", "w", "1.0.0", "n", Gate, default);
-
-        ApprovalGate? other = await store.FindAsync("globex", "w", "1.0.0", "n", null, default);
-
-        other.Should().BeNull("one tenant's configuration is not another's");
-    }
+    // How the host-wide scope then resolves — inherited by a tenant with no policy of its own,
+    // outranked by one with — is the policy store's rule, in
+    // Prism.Flowline.Testing.GatePolicyStoreContract.
 }

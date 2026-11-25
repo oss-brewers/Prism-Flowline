@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Prism.Flowline/Prism.Flowline.csproj" />
+    <Project Path="src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj" />
     <Project Path="src/Prism.Flowline.Cache.Redis/Prism.Flowline.Cache.Redis.csproj" />
     <Project Path="src/Prism.Flowline.Messaging.RabbitMQ/Prism.Flowline.Messaging.RabbitMQ.csproj" />
+    <Project Path="src/Prism.Flowline.Stores.SqlServer/Prism.Flowline.Stores.SqlServer.csproj" />
     <Project Path="src/Prism.Flowline.Service/Prism.Flowline.Service.csproj" />
   </Folder>
   <Folder Name="/tests/">
@@ -11,6 +13,7 @@
     <Project Path="tests/Prism.Flowline.DslTests/Prism.Flowline.DslTests.csproj" />
     <Project Path="tests/Prism.Flowline.ChaosTests/Prism.Flowline.ChaosTests.csproj" />
     <Project Path="tests/Prism.Flowline.BrokerTests/Prism.Flowline.BrokerTests.csproj" />
+    <Project Path="tests/Prism.Flowline.StoreTests/Prism.Flowline.StoreTests.csproj" />
     <Project Path="tests/Prism.Flowline.LoadTests/Prism.Flowline.LoadTests.csproj" />
   </Folder>
 </Solution>

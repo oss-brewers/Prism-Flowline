@@ -2,7 +2,7 @@ using Prism.Flowline.Messaging.RabbitMQ;
 using Prism.Flowline.Cache.Redis;
 using Prism.Flowline.Api;
 using Prism.Flowline.Service.ControlPlane;
-using Prism.Flowline.Service.Infrastructure;
+using Prism.Flowline.Stores.SqlServer;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -36,8 +36,9 @@ public sealed class PrismServiceOptions
 /// </summary>
 /// <remarks>
 /// Everything reusable — API endpoints, SSE, dispatcher, approvals, control plane — comes from the
-/// <c>Prism.Flowline</c> library. This project contributes only environment-specific implementations
-/// (SQL Server, Redis) and the wiring that selects them. With neither connection string configured
+/// <c>Prism.Flowline</c> library, and the environment-specific implementations (SQL Server, Redis,
+/// RabbitMQ) from their adapter projects. This project contributes the wiring that selects them.
+/// With no connection string configured
 /// the host runs entirely on the library's in-memory defaults, which is what keeps local dev and the
 /// integration tests dependency-free.
 /// </remarks>

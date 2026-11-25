@@ -4,8 +4,9 @@ using System.Text.Json;
 using Prism.Flowline.Abstractions;
 using Prism.Flowline.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
-namespace Prism.Flowline.Service;
+namespace Prism.Flowline.Stores.SqlServer;
 
 public sealed class JsonRow
 {
@@ -147,8 +148,15 @@ public sealed class SqlServerInstanceStore(IDbContextFactory<PrismDbContext> fac
         if (!string.IsNullOrWhiteSpace(query.WorkflowName)) rows = rows.Where(x => x.WorkflowName == query.WorkflowName);
         if (!string.IsNullOrWhiteSpace(query.WorkflowVersion)) rows = rows.Where(x => x.WorkflowVersion == query.WorkflowVersion);
 
-        List<WorkflowInstance> all = (await rows.ToListAsync(cancellationToken)).Select(row => Deserialize(row.Payload))
-            .OrderByDescending(instance => instance.CreatedAt).ToList();
+        IEnumerable<WorkflowInstance> matches = (await rows.ToListAsync(cancellationToken)).Select(row => Deserialize(row.Payload));
+
+        // Correlation and creation time live in the payload rather than in columns, so they are
+        // filtered here, after the columns have narrowed the rows.
+        if (!string.IsNullOrWhiteSpace(query.CorrelationId)) matches = matches.Where(x => x.CorrelationId == query.CorrelationId);
+        if (query.CreatedAfter is { } after) matches = matches.Where(x => x.CreatedAt >= after);
+        if (query.CreatedBefore is { } before) matches = matches.Where(x => x.CreatedAt <= before);
+
+        List<WorkflowInstance> all = matches.OrderByDescending(instance => instance.CreatedAt).ToList();
         return new Page<WorkflowInstance>(all.Skip(query.Offset).Take(Math.Clamp(query.Limit, 1, 1000)).ToArray(), all.Count);
     }
 
@@ -183,40 +191,71 @@ public sealed class SqlServerInstanceStore(IDbContextFactory<PrismDbContext> fac
 
     public async ValueTask<IReadOnlyList<WorkflowInstance>> ClaimAsync(string replicaId, int max, TimeSpan leaseDuration, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        if (max <= 0) return [];
+
         await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        List<InstanceRow> rows = await db.Instances.Where(row =>
-            row.Status == (int)InstanceStatus.Pending || row.Status == (int)InstanceStatus.Dispatchable ||
-            row.Status == (int)InstanceStatus.RetryScheduled || row.Status == (int)InstanceStatus.Running)
-            .Where(row => row.LeaseExpiresAt == null || row.LeaseExpiresAt <= now)
-            .OrderBy(row => row.Payload).Take(max).ToListAsync(cancellationToken);
-        var claimed = new List<WorkflowInstance>();
+        await using IDbContextTransaction transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+
+        // UPDLOCK holds the candidates until commit and READPAST steps over rows another claimer
+        // already holds, so concurrent claimers each take a disjoint set. Reading candidates
+        // without a lock and then writing them had every replica race for the same rows, and the
+        // losers' whole batch failed on the rowversion check. Parked states are not candidates: an
+        // approval or a timer moves them to Dispatchable first.
+        List<InstanceRow> rows = await db.Instances.FromSql($"""
+            SELECT TOP ({max}) * FROM [WorkflowInstances] WITH (UPDLOCK, READPAST, ROWLOCK)
+            WHERE ([LeaseExpiresAt] IS NULL OR [LeaseExpiresAt] <= {now})
+              AND ([Status] IN ({(int)InstanceStatus.Pending}, {(int)InstanceStatus.Dispatchable}, {(int)InstanceStatus.Running})
+                   OR ([Status] = {(int)InstanceStatus.RetryScheduled} AND ([NextRetryAt] IS NULL OR [NextRetryAt] <= {now})))
+            """).ToListAsync(cancellationToken);
+
+        var claimed = new List<WorkflowInstance>(rows.Count);
         foreach (InstanceRow row in rows)
         {
             WorkflowInstance current = Deserialize(row.Payload);
-            if (current.Status == InstanceStatus.RetryScheduled && current.NextRetryAt > now) continue;
-            Apply(row, current, new InstanceMutation
+            claimed.Add(Apply(row, current, new InstanceMutation
             {
                 Status = InstanceStatus.Running,
                 LeaseOwner = replicaId,
                 LeaseExpiresAt = now + leaseDuration,
                 StartedAt = current.StartedAt ?? now,
                 ClearNextRetryAt = true
-            });
-            claimed.Add(Deserialize(row.Payload));
+            }));
         }
+
         await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         return claimed;
     }
 
     public async ValueTask<bool> RenewLeaseAsync(string instanceId, string replicaId, TimeSpan leaseDuration, CancellationToken cancellationToken)
-        => await UpdateAsync(instanceId, mutation =>
-        {
-            mutation.LeaseOwner = replicaId;
-            mutation.LeaseExpiresAt = clock.GetUtcNow() + leaseDuration;
-        }, cancellationToken);
+    {
+        await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
+        InstanceRow? row = await db.Instances.SingleOrDefaultAsync(x => x.InstanceId == instanceId, cancellationToken);
 
-    public ValueTask ReleaseLeaseAsync(string instanceId, string replicaId, CancellationToken cancellationToken)
-        => new(UpdateAsync(instanceId, mutation => mutation.ClearLease = true, cancellationToken).AsTask());
+        // Only the owner extends a lease. A replica that lost its lease and renewed anyway would
+        // take the instance back from the replica that recovered it, and both would run it.
+        if (row is null || !string.Equals(row.LeaseOwner, replicaId, StringComparison.Ordinal)) return false;
+
+        Apply(row, Deserialize(row.Payload), new InstanceMutation
+        {
+            LeaseOwner = replicaId,
+            LeaseExpiresAt = clock.GetUtcNow() + leaseDuration
+        });
+        return await SaveAsync(db, cancellationToken);
+    }
+
+    public async ValueTask ReleaseLeaseAsync(string instanceId, string replicaId, CancellationToken cancellationToken)
+    {
+        await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
+        InstanceRow? row = await db.Instances.SingleOrDefaultAsync(x => x.InstanceId == instanceId, cancellationToken);
+
+        // Only the owner releases. A stale replica's release in its finally block would otherwise
+        // clear the lease of the replica now running the instance and invite a third to claim it.
+        if (row is null || !string.Equals(row.LeaseOwner, replicaId, StringComparison.Ordinal)) return;
+
+        Apply(row, Deserialize(row.Payload), new InstanceMutation { ClearLease = true });
+        await SaveAsync(db, cancellationToken);
+    }
 
     private async ValueTask<bool> SaveAsync(PrismDbContext db, CancellationToken cancellationToken)
     {
@@ -231,7 +270,7 @@ public sealed class SqlServerInstanceStore(IDbContextFactory<PrismDbContext> fac
         }
     }
 
-    private void Apply(InstanceRow row, WorkflowInstance current, InstanceMutation mutation)
+    private WorkflowInstance Apply(InstanceRow row, WorkflowInstance current, InstanceMutation mutation)
     {
         WorkflowInstance updated = current with
         {
@@ -254,6 +293,7 @@ public sealed class SqlServerInstanceStore(IDbContextFactory<PrismDbContext> fac
         row.LeaseOwner = updated.LeaseOwner;
         row.LeaseExpiresAt = updated.LeaseExpiresAt;
         row.Payload = JsonSerializer.Serialize(updated, Json);
+        return updated;
     }
 
     private static InstanceRow ToRow(WorkflowInstance instance) => new()
@@ -306,9 +346,14 @@ public sealed class SqlServerEventStore(IDbContextFactory<PrismDbContext> factor
         IQueryable<EventRow> rows = db.Events.AsNoTracking().Where(row => row.InstanceId == query.InstanceId && row.Sequence > query.FromExclusive);
         if (query.ToInclusive is { } to) rows = rows.Where(row => row.Sequence <= to);
         if (query.Types is { Count: > 0 }) rows = rows.Where(row => query.Types.Contains(row.EventType));
-        List<EventEnvelope> all = (await rows.OrderBy(row => row.Sequence).Take(Math.Clamp(query.Limit, 1, 1000)).ToListAsync(cancellationToken))
+
+        // Total is every match, not the page, and a page with more after it names its last
+        // sequence as the cursor: the history endpoint passes both through to the caller.
+        int total = await rows.CountAsync(cancellationToken);
+        List<EventEnvelope> page = (await rows.OrderBy(row => row.Sequence).Take(Math.Clamp(query.Limit, 1, 1000)).ToListAsync(cancellationToken))
             .Select(row => JsonSerializer.Deserialize<EventEnvelope>(row.Payload, Json)!).ToList();
-        return new Page<EventEnvelope>(all, all.Count);
+        string? nextCursor = page.Count > 0 && page.Count < total ? page[^1].Sequence.ToString() : null;
+        return new Page<EventEnvelope>(page, total, nextCursor);
     }
 
     public async IAsyncEnumerable<EventEnvelope> ReadAsync(string instanceId, long fromExclusive, [EnumeratorCancellation] CancellationToken cancellationToken)

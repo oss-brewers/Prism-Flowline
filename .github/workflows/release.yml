@@ -57,15 +57,17 @@ jobs:
         run: dotnet build -c Release --no-restore
         working-directory: '${{ env.working-directory }}'
 
-      # Same reasoning as ci.yml: the broker suite skips itself without a container runtime, and a
-      # release must not be cut from a run that quietly tested less than the CI leg did.
+      # Same reasoning as ci.yml: the broker and store suites skip themselves without a container
+      # runtime, and a release must not be cut from a run that quietly tested less than the CI leg did.
       - name: Verify container runtime
         run: docker version
 
+      # Kept in step with ci.yml and the images the test fixtures name.
       - name: Pre-pull test container images
         run: |
           docker pull redis:7-alpine
           docker pull rabbitmq:4-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-latest
 
       - name: Test
         run: dotnet test -c Release --no-build

@@ -6,11 +6,16 @@ namespace Prism.Flowline.Persistence;
 
 /// <summary>
 /// Instance store backed by memory. Models the concurrency semantics the SQL store must provide:
-/// version-checked transitions, terminal-state protection, and disjoint atomic lease claims.
+/// version-checked transitions, terminal-state protection, disjoint atomic lease claims, and one
+/// instance per tenant and idempotency key.
 /// </summary>
 public sealed class InMemoryInstanceStore : IInstanceStore
 {
     private readonly ConcurrentDictionary<string, WorkflowInstance> _instances = new(StringComparer.Ordinal);
+
+    // The in-memory analogue of the unique (tenant, key) index: reserved before the instance is
+    // added, so two concurrent starts with one key cannot both get past it.
+    private readonly ConcurrentDictionary<(string TenantId, string Key), string> _idempotencyKeys = new();
     private readonly object _claimLock = new();
     private readonly TimeProvider _clock;
 
@@ -40,8 +45,22 @@ public sealed class InMemoryInstanceStore : IInstanceStore
             Version = 1
         };
 
+        // The launcher looks a key up before it creates, but two requests can both look and find
+        // nothing. The reservation is what decides between them.
+        (string, string)? reservation = request.IdempotencyKey is { } key ? (request.TenantId, key) : null;
+        if (reservation is { } reserved && !_idempotencyKeys.TryAdd(reserved, instance.InstanceId))
+        {
+            throw new InvalidOperationException(
+                $"Tenant '{request.TenantId}' already has an instance with idempotency key '{request.IdempotencyKey}'.");
+        }
+
         if (!_instances.TryAdd(instance.InstanceId, instance))
         {
+            if (reservation is { } release)
+            {
+                _idempotencyKeys.TryRemove(KeyValuePair.Create(release, instance.InstanceId));
+            }
+
             throw new InvalidOperationException($"Instance '{instance.InstanceId}' already exists.");
         }
 
@@ -53,10 +72,11 @@ public sealed class InMemoryInstanceStore : IInstanceStore
 
     public ValueTask<WorkflowInstance?> FindByIdempotencyKeyAsync(
         string tenantId, string idempotencyKey, CancellationToken cancellationToken)
-        => ValueTask.FromResult(_instances.Values.FirstOrDefault(i =>
-            i.TenantId == tenantId &&
-            i.IdempotencyKey is not null &&
-            string.Equals(i.IdempotencyKey, idempotencyKey, StringComparison.Ordinal)));
+        => ValueTask.FromResult(
+            _idempotencyKeys.TryGetValue((tenantId, idempotencyKey), out string? instanceId) &&
+            _instances.TryGetValue(instanceId, out WorkflowInstance? instance)
+                ? instance
+                : null);
 
     public ValueTask<Page<WorkflowInstance>> QueryAsync(InstanceQuery query, CancellationToken cancellationToken)
     {

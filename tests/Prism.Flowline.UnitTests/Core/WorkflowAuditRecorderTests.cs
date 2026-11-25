@@ -73,22 +73,6 @@ public class WorkflowAuditRecorderTests
     }
 
     [Fact]
-    public async Task Re_recording_the_same_section_and_key_replaces_the_entry()
-    {
-        var store = new InMemoryAuditRecordStore();
-        WorkflowAuditRecorder recorder = CreateRecorder(store);
-        await recorder.OpenAsync("ORDER-1", null, default);
-
-        await recorder.RecordAsync("step", "pick", new { attempt = 1 }, default);
-        await recorder.RecordAsync("step", "pick", new { attempt = 2 }, default);
-
-        AuditRecordDocument document = (await store.GetAsync("wf-1", default))!;
-
-        document.Entries.Should().ContainSingle("a retried step corrects its record rather than contradicting it");
-        document.Entries[0].PayloadJson.Should().Contain("2");
-    }
-
-    [Fact]
     public async Task Closing_settles_the_root_and_keeps_the_entries()
     {
         var store = new InMemoryAuditRecordStore();
@@ -148,23 +132,9 @@ public class WorkflowAuditRecorderTests
             "closing a record that was never opened would write a root with no identity");
     }
 
-    [Fact]
-    public async Task Roots_are_listed_per_workflow_and_filtered_by_status()
-    {
-        var store = new InMemoryAuditRecordStore();
-
-        WorkflowAuditRecorder first = CreateRecorder(store, "wf-1");
-        await first.OpenAsync("ORDER-1", null, default);
-        await first.CloseAsync(AuditRecordStatus.Completed, default);
-
-        WorkflowAuditRecorder second = CreateRecorder(store, "wf-2");
-        await second.OpenAsync("ORDER-2", null, default);
-
-        (await store.ListAsync("orders", null, null, 10, default)).Should().HaveCount(2);
-        (await store.ListAsync("orders", null, AuditRecordStatus.Open, 10, default)).Should().ContainSingle();
-        (await store.ListAsync("orders", "ORDER-1", null, 10, default)).Should().ContainSingle();
-        (await store.ListAsync("other-workflow", null, null, 10, default)).Should().BeEmpty();
-    }
+    // Replacing an entry with the same section and key, and listing roots by workflow, status and
+    // key, are the store's rules rather than the recorder's: they live in
+    // Prism.Flowline.Testing.AuditRecordStoreContract and run in Contracts/InMemoryStoreContractTests.
 
     private sealed class ThrowingAuditRecordStore : IAuditRecordStore
     {

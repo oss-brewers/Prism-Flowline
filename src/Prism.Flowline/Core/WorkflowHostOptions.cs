@@ -33,6 +33,7 @@ public sealed class WorkflowHostOptions
     public LoggingOptions Logging { get; set; } = new();
     public DriftOptions Drift { get; set; } = new();
     public EgressOptions Egress { get; set; } = new();
+    public RegistryOptions Registry { get; set; } = new();
 }
 
 public sealed class LeaseOptions

@@ -332,9 +332,12 @@ public static class Endpoints
                 return Results.NotFound();
             }
 
+            WorkflowDescriptor? descriptor = await registry
+                .ResolveAsync(instance.WorkflowName, instance.WorkflowVersion, instance.TenantId, cancellationToken)
+                .ConfigureAwait(false);
+
             AuditRecordDefinition? definition =
-                registry.Resolve(instance.WorkflowName, instance.WorkflowVersion)?.Definition
-                    is IAuditedWorkflowDefinition audited ? audited.AuditRecord : null;
+                descriptor?.Definition is IAuditedWorkflowDefinition audited ? audited.AuditRecord : null;
 
             AuditRecordDocument? document = definition is null
                 ? null
@@ -448,7 +451,7 @@ public static class Endpoints
 
             // A log-only workflow would hold this stream open and never write to it, which a client
             // cannot tell apart from a stalled run. Refuse, and say where the events actually are.
-            if (NotificationsOf(services, instance) is { IsLogOnly: true })
+            if (await NotificationsOfAsync(services, instance, cancellationToken).ConfigureAwait(false) is { IsLogOnly: true })
             {
                 return Results.Problem(
                     title: "This workflow does not stream events",
@@ -854,14 +857,19 @@ public static class Endpoints
     /// declared none. Resolved by the instance's version, not the newest, so an in-flight run keeps
     /// the behaviour it started under.
     /// </summary>
-    private static NotificationPolicy? NotificationsOf(IServiceProvider services, WorkflowInstance instance)
+    private static async ValueTask<NotificationPolicy?> NotificationsOfAsync(
+        IServiceProvider services, WorkflowInstance instance, CancellationToken cancellationToken)
     {
-        var registry = services.GetService<IWorkflowRegistry>();
+        if (services.GetService<IWorkflowRegistry>() is not { } registry)
+        {
+            return null;
+        }
 
-        return registry?.Resolve(instance.WorkflowName, instance.WorkflowVersion)?.Definition
-            is INotifyingWorkflow notifying
-                ? notifying.Notifications
-                : null;
+        WorkflowDescriptor? descriptor = await registry
+            .ResolveAsync(instance.WorkflowName, instance.WorkflowVersion, instance.TenantId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return descriptor?.Definition is INotifyingWorkflow notifying ? notifying.Notifications : null;
     }
 
     /// <summary>

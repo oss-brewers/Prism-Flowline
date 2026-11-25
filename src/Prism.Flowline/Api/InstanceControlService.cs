@@ -163,7 +163,8 @@ public sealed class InstanceControlService : IInstanceControl
             return new ControlResult(ControlResultKind.NotFound);
         }
 
-        WorkflowDescriptor? descriptor = _registry.Resolve(source.WorkflowName);
+        WorkflowDescriptor? descriptor = await _registry
+            .ResolveAsync(source.WorkflowName, null, source.TenantId, cancellationToken).ConfigureAwait(false);
         if (descriptor is null)
         {
             return new ControlResult(ControlResultKind.UnknownWorkflow, source,
@@ -218,7 +219,9 @@ public sealed class InstanceControlService : IInstanceControl
                 "The checkpoint chain has been pruned by retention; use mode 'restart' instead.");
         }
 
-        if (_registry.Resolve(instance.WorkflowName, instance.WorkflowVersion) is null)
+        if (await _registry
+                .ResolveAsync(instance.WorkflowName, instance.WorkflowVersion, instance.TenantId, cancellationToken)
+                .ConfigureAwait(false) is null)
         {
             return new ControlResult(ControlResultKind.UnknownWorkflow, instance,
                 $"Version '{instance.WorkflowVersion}' of '{instance.WorkflowName}' is no longer registered.");

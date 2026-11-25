@@ -190,138 +190,23 @@ public class IdGeneratorTests
     }
 }
 
+/// <summary>
+/// What the in-memory event store does beyond the contract. Ordering, ranges, type filters, paging,
+/// streaming, isolation and concurrent appends live in <c>Prism.Flowline.Testing.EventStoreContract</c>
+/// and run against this store in <see cref="Contracts.InMemoryEventStoreContractTests"/>.
+/// </summary>
 public class EventStoreTests
 {
     private readonly InMemoryEventStore _store = new();
 
-    private async Task SeedAsync(string instanceId, int count, string type = WorkflowEventTypes.ExecutorInvoked)
-        => await _store.AppendBatchAsync(
-            Enumerable.Range(1, count).Select(i => TestFactory.Event(instanceId, i, type)).ToArray(), default);
-
-    [Fact]
-    public async Task Query_returns_events_in_ascending_sequence()
-    {
-        await _store.AppendBatchAsync(
-        [
-            TestFactory.Event("i1", 3, "c"),
-            TestFactory.Event("i1", 1, "a"),
-            TestFactory.Event("i1", 2, "b")
-        ], default);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(new EventQuery("i1"), default);
-
-        page.Items.Select(e => e.Sequence).Should().Equal(1, 2, 3);
-    }
-
-    [Fact]
-    public async Task Query_honours_from_exclusive()
-    {
-        await SeedAsync("i1", 5);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(new EventQuery("i1", FromExclusive: 2), default);
-
-        page.Items.Select(e => e.Sequence).Should().Equal(3, 4, 5);
-    }
-
-    [Fact]
-    public async Task Query_honours_to_inclusive()
-    {
-        await SeedAsync("i1", 5);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(new EventQuery("i1", ToInclusive: 3), default);
-
-        page.Items.Select(e => e.Sequence).Should().Equal(1, 2, 3);
-    }
-
-    [Fact]
-    public async Task Query_filters_by_type()
-    {
-        await _store.AppendBatchAsync(
-        [
-            TestFactory.Event("i1", 1, WorkflowEventTypes.ExecutorInvoked),
-            TestFactory.Event("i1", 2, WorkflowEventTypes.ApprovalRequested),
-            TestFactory.Event("i1", 3, WorkflowEventTypes.ExecutorCompleted)
-        ], default);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(
-            new EventQuery("i1", Types: [WorkflowEventTypes.ApprovalRequested]), default);
-
-        page.Items.Should().ContainSingle().Which.Sequence.Should().Be(2);
-    }
-
-    [Fact]
-    public async Task Query_paginates_and_reports_a_cursor()
-    {
-        await SeedAsync("i1", 10);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(new EventQuery("i1", Limit: 4), default);
-
-        page.Items.Should().HaveCount(4);
-        page.Total.Should().Be(10);
-        page.NextCursor.Should().Be("4");
-    }
-
-    [Fact]
-    public async Task Last_page_has_no_cursor()
-    {
-        await SeedAsync("i1", 3);
-
-        Page<EventEnvelope> page = await _store.QueryAsync(new EventQuery("i1", Limit: 10), default);
-
-        page.NextCursor.Should().BeNull();
-    }
-
     [Fact]
     public async Task Limit_is_clamped_to_the_permitted_range()
     {
-        await SeedAsync("i1", 5);
+        await _store.AppendBatchAsync(
+            Enumerable.Range(1, 5).Select(i => TestFactory.Event("i1", i, WorkflowEventTypes.ExecutorInvoked)).ToArray(), default);
 
         (await _store.QueryAsync(new EventQuery("i1", Limit: 0), default)).Items.Should().HaveCount(1);
         (await _store.QueryAsync(new EventQuery("i1", Limit: 99_999), default)).Items.Should().HaveCount(5);
-    }
-
-    [Fact]
-    public async Task Read_streams_from_a_sequence()
-    {
-        await SeedAsync("i1", 5);
-
-        var read = new List<long>();
-        await foreach (EventEnvelope envelope in _store.ReadAsync("i1", 3, default))
-        {
-            read.Add(envelope.Sequence);
-        }
-
-        read.Should().Equal(4, 5);
-    }
-
-    [Fact]
-    public async Task MaxSequence_reports_the_highest_stored_value()
-    {
-        await SeedAsync("i1", 7);
-        (await _store.MaxSequenceAsync("i1", default)).Should().Be(7);
-    }
-
-    [Fact]
-    public async Task MaxSequence_of_an_unknown_instance_is_zero()
-        => (await _store.MaxSequenceAsync("nope", default)).Should().Be(0);
-
-    [Fact]
-    public async Task Instances_are_isolated()
-    {
-        await SeedAsync("i1", 3);
-        await SeedAsync("i2", 5);
-
-        (await _store.QueryAsync(new EventQuery("i1"), default)).Total.Should().Be(3);
-        (await _store.QueryAsync(new EventQuery("i2"), default)).Total.Should().Be(5);
-    }
-
-    [Fact]
-    public async Task Concurrent_appends_do_not_lose_events()
-    {
-        await Task.WhenAll(Enumerable.Range(1, 200).Select(i =>
-            Task.Run(async () => await _store.AppendBatchAsync([TestFactory.Event("i1", i, "e")], default))));
-
-        (await _store.QueryAsync(new EventQuery("i1", Limit: 1000), default)).Total.Should().Be(200);
     }
 
     [Fact]

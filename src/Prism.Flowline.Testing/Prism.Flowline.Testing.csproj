@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Prism.Flowline.Testing</RootNamespace>
+    <AssemblyName>Prism.Flowline.Testing</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Package">
+    <IsPackable>true</IsPackable>
+    <PackageId>Prism.Flowline.Testing</PackageId>
+    <Version>1.0.0</Version>
+    <Title>Prism Flowline - store contract for provider authors</Title>
+    <Authors>Najaf Shaikh</Authors>
+    <Company>oss-brewers</Company>
+    <Product>Prism Flowline</Product>
+    <Description>
+      The rules every Prism.Flowline store must keep, written once and runnable against any
+      implementation: instances, events, logs, approvals, gate policies, audit, audit records, blobs,
+      domain-event subscriptions, checkpoints and the cache. Each contract is a plain class whose
+      cases are ordinary methods, so a provider's test project runs them under whichever test
+      framework it already uses. Depends on Prism.Flowline and nothing else.
+    </Description>
+    <PackageTags>workflow;agent-framework;testing;contract;conformance;storage;provider</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/oss-brewers/Prism-Flowline</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/oss-brewers/Prism-Flowline</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <Copyright>Copyright (c) 2025 Najaf Shaikh</Copyright>
+
+    <!-- The case names and their remarks are the documentation a provider author reads when a case
+         fails, so they ship with the package. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The framework and nothing else: no test framework and no assertion library, so the same
+         package serves an xunit 2 suite, an xunit 3 suite on Microsoft.Testing.Platform, or anything
+         that can call a method returning a Task. -->
+    <ProjectReference Include="../Prism.Flowline/Prism.Flowline.csproj" />
+  </ItemGroup>
+</Project>

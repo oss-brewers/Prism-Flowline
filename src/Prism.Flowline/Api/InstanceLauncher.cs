@@ -59,13 +59,17 @@ public sealed class InstanceLauncher : IInstanceLauncher
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        WorkflowDescriptor? descriptor = _registry.Resolve(workflowName, version);
+        // Resolved for the tenant starting it: another tenant's private workflow is unknown here,
+        // indistinguishable from one that does not exist. A source that cannot answer throws, and
+        // the start fails with nothing created.
+        WorkflowDescriptor? descriptor = await _registry
+            .ResolveAsync(workflowName, version, tenantId, cancellationToken).ConfigureAwait(false);
         if (descriptor is null)
         {
             return new StartResult(StartResultKind.UnknownWorkflow);
         }
 
-        // Definitions are global, but an instance is somebody's work. Starting one "for all tenants"
+        // Definitions may be shared, but an instance is somebody's work. Starting one "for all tenants"
         // would create a row no tenant-filtered query returns and every tenant could arguably see —
         // so it is refused rather than quietly owned by a tenant literally named "0".
         if (!Tenancy.CanOwnInstance(tenantId))

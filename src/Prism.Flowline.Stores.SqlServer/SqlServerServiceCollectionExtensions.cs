@@ -7,15 +7,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
-namespace Prism.Flowline.Service.Infrastructure;
+namespace Prism.Flowline.Stores.SqlServer;
 
 /// <summary>
 /// Registers the SQL Server implementations of the framework's store contracts.
 /// </summary>
 /// <remarks>
 /// The framework library (<c>Prism.Flowline</c>) ships in-memory defaults so it runs standalone for
-/// local development and tests. Production storage is infrastructure-specific and therefore lives
-/// here, in the host, and is swapped in at startup.
+/// local development and tests. Production storage is infrastructure-specific, so it lives in an
+/// adapter beside the framework rather than inside it, and a host swaps it in at startup.
 /// </remarks>
 public static class SqlServerServiceCollectionExtensions
 {
@@ -26,6 +26,17 @@ public static class SqlServerServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
+
+        // Microsoft.Data.SqlClient will not open a connection in invariant globalization mode, and
+        // says so only when the first query runs — in a host, on the first request that touches an
+        // instance. Saying it here turns that into a failure at startup that names the fix.
+        if (AppContext.TryGetSwitch("System.Globalization.Invariant", out bool invariant) && invariant)
+        {
+            throw new InvalidOperationException(
+                "The SQL Server stores need culture data, and this process runs in invariant globalization mode, " +
+                "which Microsoft.Data.SqlClient does not support. Set <InvariantGlobalization>false</InvariantGlobalization> " +
+                "in the host's project file.");
+        }
 
         services.AddDbContextFactory<PrismDbContext>(builder => builder.UseSqlServer(connectionString));
 

@@ -304,6 +304,55 @@ public class GateConfigurationServiceTests
     }
 
     [Fact]
+    public async Task Two_tenants_private_definitions_of_one_name_are_inspected_separately()
+    {
+        // One name and version, two graphs, each private to its tenant — two canvases that happen
+        // to be called the same thing. A name-keyed inspector cache would show t2 the graph of t1.
+        var registry = new WorkflowRegistry([], [new PerTenantSource(new Dictionary<string, IWorkflowDefinition>
+        {
+            ["t1"] = new ConfigurableWorkflow("canvas", "1.0.0"),
+            ["t2"] = new SingleNodeWorkflow("canvas", "1.0.0", "review")
+        })]);
+        var service = new GateConfigurationService(registry, new WorkflowInspector(), new InMemoryGatePolicyStore());
+
+        GateConfigResult first = await service.GetNodesAsync("canvas", "1.0.0", "t1", default);
+        GateConfigResult second = await service.GetNodesAsync("canvas", "1.0.0", "t2", default);
+        GateConfigResult stranger = await service.GetNodesAsync("canvas", "1.0.0", "t3", default);
+
+        first.Nodes!.Nodes.Select(n => n.ExecutorId).Should().Equal("validate", "notify", "pay");
+        second.Nodes!.Nodes.Select(n => n.ExecutorId).Should().Equal("review");
+        stranger.Kind.Should().Be(GateConfigResultKind.UnknownWorkflow, "a private workflow is unknown to everyone else");
+    }
+
+    private sealed class PerTenantSource(IReadOnlyDictionary<string, IWorkflowDefinition> byTenant) : IWorkflowDefinitionSource
+    {
+        public ValueTask<ResolvedWorkflow?> FindAsync(WorkflowLookup lookup, CancellationToken cancellationToken)
+            => ValueTask.FromResult(lookup.TenantId is { } tenant && byTenant.TryGetValue(tenant, out IWorkflowDefinition? owned)
+                ? new ResolvedWorkflow(owned) { TenantId = tenant }
+                : null);
+    }
+
+    private sealed class SingleNodeWorkflow(string name, string version, string nodeId)
+        : IWorkflowDefinition<SampleContext, SampleResult>
+    {
+        public string Name => name;
+        public string Version => version;
+
+        public ValueTask<Workflow> BuildAsync(WorkflowBuildContext context, CancellationToken cancellationToken)
+        {
+            ExecutorBinding only = context.Node(new Only(nodeId));
+            return new ValueTask<Workflow>(new WorkflowBuilder(only).WithOutputFrom(only).Build());
+        }
+
+        private sealed class Only(string id) : HostExecutor<SampleContext, SampleResult>(id)
+        {
+            protected override ValueTask<SampleResult> ExecuteCoreAsync(
+                SampleContext input, IWorkflowContext context, CancellationToken cancellationToken)
+                => ValueTask.FromResult(new SampleResult(input.Value));
+        }
+    }
+
+    [Fact]
     public async Task Configuring_a_node_makes_it_require_approval_for_that_tenant_only()
     {
         (IGateConfigurationService service, _) = Build();

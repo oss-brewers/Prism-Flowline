@@ -199,14 +199,13 @@ public class CodeGateVariationTests : IClassFixture<CodeAuthoringHostFixture>
     }
 
     /// <summary>
-    /// Pins a defect rather than the intent. <c>GateEvaluator</c> hands the resumed executor the
-    /// amended input as a raw <see cref="JsonElement"/>, and <c>HostExecutor</c> casts its input to
-    /// the declared <c>TIn</c>, so a modified decision fails the cast instead of running the node on
-    /// the amended value. The decision is accepted and the approval reads Approved, so the fault is
-    /// invisible until the instance is looked at: it dead-stops.
+    /// Was a defect pin: <c>GateEvaluator</c> hands the resumed executor the amendment as the JSON the
+    /// approver submitted, and <c>HostExecutor</c> cast it straight to its declared input type, so the
+    /// node failed the cast and the instance dead-stopped under an approval that read Approved.
+    /// The amendment is now bound to the input type first.
     /// </summary>
     [Fact]
-    public async Task An_amended_decision_currently_fails_the_resumed_node_rather_than_amending_its_input()
+    public async Task An_amended_decision_runs_the_resumed_node_on_the_amended_input()
     {
         (string instanceId, string approvalId) =
             await _host.StartAndParkAsync(_client, "modifiable-order", new OrderContext("ORD-M3", Amount: 900m));
@@ -222,12 +221,54 @@ public class CodeGateVariationTests : IClassFixture<CodeAuthoringHostFixture>
         WorkflowInstance instance = await _host.WaitForStatusAsync(
             instanceId, InstanceStatus.DeadStopped, InstanceStatus.Completed, InstanceStatus.Failed);
 
-        instance.Status.Should().NotBe(InstanceStatus.Completed,
-            "when this starts completing, the modified-input path has been fixed and this test should " +
-            "assert the node saw amount 100 instead");
+        instance.Status.Should().Be(InstanceStatus.Completed, instance.TerminalReason);
+        _host.Inputs.For("settle", instanceId).Should().Be(("ORD-M3", 100m), "the node ran on the amendment");
+    }
 
-        instance.TerminalReason.Should().Contain("Cast",
-            "the resumed node receives a JsonElement where its declared input type was expected");
+    // ---- a gate in front of a node that cannot carry one -----------------------------------
+
+    [Fact]
+    public async Task A_gate_in_front_of_a_raw_executor_parks_before_it_runs()
+    {
+        (string instanceId, string approvalId) =
+            await _host.StartAndParkAsync(_client, "gate-before-raw", new OrderContext("ORD-G1", Amount: 700m));
+
+        _host.Inputs.For("prepare", instanceId).Should().NotBeNull();
+        _host.Inputs.For("raw-settle", instanceId).Should().BeNull("nothing behind the gate may run before the decision");
+
+        ApprovalRequest? approval = await _host.ApprovalAsync(approvalId);
+        approval!.ExecutorId.Should().Be("approve");
+        approval.Reason.Should().Be("BeforeRawSettlement");
+    }
+
+    [Fact]
+    public async Task A_gate_in_front_of_a_raw_executor_passes_the_message_through_unchanged()
+    {
+        (string instanceId, string approvalId) =
+            await _host.StartAndParkAsync(_client, "gate-before-raw", new OrderContext("ORD-G2", Amount: 700m));
+
+        (await _client.PostAsJsonAsync($"/approvals/{approvalId}/decision", new { decision = "approve" }))
+            .StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await _host.WaitForStatusAsync(instanceId, InstanceStatus.Completed);
+        _host.Inputs.For("raw-settle", instanceId).Should().Be(("ORD-G2", 700m));
+    }
+
+    [Fact]
+    public async Task A_gate_in_front_of_a_raw_executor_lets_an_approver_modify_the_message()
+    {
+        (string instanceId, string approvalId) =
+            await _host.StartAndParkAsync(_client, "gate-before-raw", new OrderContext("ORD-G3", Amount: 700m));
+
+        (await _client.PostAsJsonAsync($"/approvals/{approvalId}/decision", new
+        {
+            decision = "approve_with_modification",
+            modifiedInput = new { orderId = "ORD-G3", amount = 70m }
+        })).StatusCode.Should().Be(HttpStatusCode.Accepted);
+
+        await _host.WaitForStatusAsync(instanceId, InstanceStatus.Completed);
+        _host.Inputs.For("raw-settle", instanceId).Should().Be(("ORD-G3", 70m),
+            "the raw node behind the gate receives the amended message");
     }
 
     // ---- segregation of duties --------------------------------------------------------------
@@ -423,7 +464,7 @@ public class CodeAuthoringSeamTests : IClassFixture<CodeAuthoringHostFixture>
         Action gating = () => context.RawNode((Microsoft.Agents.AI.Workflows.Executor)executor, gate => gate.Reason("nope"));
 
         gating.Should().Throw<InvalidOperationException>()
-            .WithMessage("*cannot be approval-gated*");
+            .WithMessage("*cannot be approval-gated*context.Gate<TMessage>*in front of it*");
     }
 
     // ---- failure classification -------------------------------------------------------------

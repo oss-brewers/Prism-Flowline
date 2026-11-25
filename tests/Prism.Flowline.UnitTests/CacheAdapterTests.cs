@@ -10,21 +10,13 @@ using Xunit;
 
 namespace Prism.Flowline.UnitTests;
 
+/// <summary>
+/// What the in-memory cache does beyond the contract: it reads its clock, so expiry can be shown
+/// without waiting. Misses, round trips, removal and get-or-create are every cache's rules, in
+/// <c>Prism.Flowline.Testing.CacheStoreContract</c>.
+/// </summary>
 public class InMemoryCacheStoreTests
 {
-    [Fact]
-    public async Task A_missing_key_is_absent_rather_than_an_error()
-        => (await new InMemoryCacheStore().GetAsync<string>("nope", default)).Should().BeNull();
-
-    [Fact]
-    public async Task A_stored_value_reads_back()
-    {
-        var store = new InMemoryCacheStore();
-        await store.SetAsync("k", new { Name = "prism" }, null, default);
-
-        (await store.GetAsync<object>("k", default)).Should().NotBeNull();
-    }
-
     [Fact]
     public async Task A_value_expires_once_its_ttl_has_passed()
     {
@@ -50,34 +42,6 @@ public class InMemoryCacheStoreTests
         clock.Advance(TimeSpan.FromDays(30));
 
         (await store.GetAsync<string>("k", default)).Should().Be("v");
-    }
-
-    [Fact]
-    public async Task GetOrCreate_computes_once_and_then_reads()
-    {
-        var store = new InMemoryCacheStore();
-        int calls = 0;
-
-        ValueTask<string> Factory(CancellationToken _)
-        {
-            calls++;
-            return ValueTask.FromResult("computed");
-        }
-
-        (await store.GetOrCreateAsync("k", Factory, null, default)).Should().Be("computed");
-        (await store.GetOrCreateAsync("k", Factory, null, default)).Should().Be("computed");
-
-        calls.Should().Be(1);
-    }
-
-    [Fact]
-    public async Task Remove_reports_whether_anything_was_there()
-    {
-        var store = new InMemoryCacheStore();
-        await store.SetAsync("k", "v", null, default);
-
-        (await store.RemoveAsync("k", default)).Should().BeTrue();
-        (await store.RemoveAsync("k", default)).Should().BeFalse();
     }
 }
 

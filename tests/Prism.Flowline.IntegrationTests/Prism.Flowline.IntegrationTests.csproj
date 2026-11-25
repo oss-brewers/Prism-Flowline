@@ -12,4 +12,9 @@
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.0.0" />
     <PackageReference Include="coverlet.collector" Version="6.0.2" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The audit-record contract, held against the host's SQLite store. -->
+    <ProjectReference Include="../../src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj" />
+    <Compile Include="../Shared/ContractCaseName.cs" Link="Shared/ContractCaseName.cs" />
+  </ItemGroup>
 </Project>

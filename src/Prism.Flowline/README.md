@@ -75,11 +75,56 @@ public sealed class OrderWorkflow : IWorkflowDefinition<OrderContext, OrderResul
 Executors derive from `HostExecutor<TIn, TOut>` and implement `ExecuteCoreAsync`. `HandleAsync` is
 sealed so gate evaluation and the middleware pipeline cannot be bypassed.
 
+## Embedding it in your own platform
+
+**Workflows from your own storage.** A host that keeps workflows in a database, or compiles them
+from a canvas, registers a source. The registry asks it for any workflow it was not composed with:
+
+```csharp
+builder.Services
+    .AddWorkflowHost(builder.Configuration)
+    .AddWorkflowSource<CanvasCatalog>();
+
+public sealed class CanvasCatalog : IWorkflowDefinitionSource
+{
+    public async ValueTask<ResolvedWorkflow?> FindAsync(WorkflowLookup lookup, CancellationToken ct)
+        => await LoadAsync(lookup.Name, lookup.Version, lookup.TenantId, ct) is { } canvas
+            ? new ResolvedWorkflow(Compile(canvas)) { TenantId = canvas.OwnerTenantId }   // null = shared
+            : null;                                                                       // null = no such workflow
+}
+```
+
+A source promises that a version never changes and that it answers on any replica after a restart.
+Returning null means the workflow does not exist; throwing means "cannot say right now", and a run
+is then retried rather than dead-stopped. A definition with a `TenantId` is private: any other tenant
+is told there is no such workflow. Sourced workflows run, resume and gate like registered ones. They
+are not listed by `GET /workflows`.
+
+**Executors you did not write as host executors.** `Node` also takes any Agent Framework `Executor`.
+It wraps it with the same id and protocol, so the executor can be gated (by its declaration or by
+a tenant), runs inside the executor middleware pipeline, and produces the same events it would
+bound raw:
+
+```csharp
+var review = ctx.Node(compiledCanvasNode, gate => gate.Mode(ExecutionMode.RequireApproval));
+```
+
+For an `AIAgent` binding, a request port or a sub-workflow, none of which is an executor instance,
+put a gate in front instead:
+
+```csharp
+var approve = ctx.Gate<OrderContext>("approve-dispatch", gate => gate.Mode(ExecutionMode.RequireApproval));
+var dispatch = ctx.RawNode(agent.BindAsExecutor());
+```
+
+Every event the engine raises is recorded. Agent output streams as `agent.update`, complete
+responses are stored as `agent.response`, and an executor's own events are stored as `custom.*`.
+
 ## What it provides
 
 | Area | Behaviour |
 | --- | --- |
-| Execution | Versioned registration; instances pin the version they started with |
+| Execution | Versioned registration, or definitions resolved from your own storage at run time; instances pin the version they started with |
 | Durability | Checkpoint per superstep by default; resume from the last committed checkpoint |
 | Multi-instance | Lease-based dispatch; at most one replica executes an instance at a time |
 | Failure policy | The workflow's `Classify` chooses retry, dead-stop, or escalate |
@@ -108,7 +153,9 @@ services.AddSingleton<IInstanceStore, SqlServerInstanceStore>();
 
 Implementations must preserve a few invariants: optimistic concurrency on instance updates, terminal
 state never overwritten by a losing writer, exclusive renewable leases, unique ordered event
-sequences per instance, and checkpoint indexes returned oldest-first.
+sequences per instance, and checkpoint indexes returned oldest-first. `Prism.Flowline.Testing` states
+every one of them as a runnable case — one contract class per store, no test framework required — so
+a new implementation can be checked against the same rules the in-memory stores pass.
 
 ## Links
 

@@ -50,7 +50,30 @@ public sealed class WorkflowRunner
     private readonly WorkflowRunnerDependencies _deps;
     private int _currentSuperstep;
     private string? _latestCheckpointId;
-    private readonly Queue<string> _hostInvocationEvents = new();
+    /// <summary>
+    /// Executors attached through <see cref="WorkflowBuildContext.Node(IHostExecutor, Action{ApprovalGateBuilder}?)"/>:
+    /// host executors and wrapped framework executors, which may announce a delivery themselves when
+    /// it parks. Fixed once the graph is built and only read afterwards.
+    /// </summary>
+    private readonly HashSet<string> _attached = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Who records each delivery's <c>executor.invoked</c> for an attached executor. Normally the run
+    /// loop does, from the engine's event, in stream order — after the previous node's completion,
+    /// which is what the graph projection infers edges from. A delivery that parks announces itself
+    /// first if the run loop has not reached its event yet, so the invocation precedes the approval.
+    /// One lock covers both sides, so each delivery is recorded once whichever gets there first.
+    /// </summary>
+    /// <remarks>
+    /// Replaces handlers announcing every delivery from inside the handler. The run loop lags the
+    /// engine, so an announcement could be stored before the previous node's completion — the graph
+    /// then lost the edge between them — and the queue that de-duplicated the engine's event raced the
+    /// run loop and recorded some invocations twice.
+    /// </remarks>
+    private readonly SemaphoreSlim _invocationRecord = new(1, 1);
+    private readonly Dictionary<string, int> _deliveriesStarted = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _engineInvocationsSeen = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _announcedThrough = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Resolved once per run rather than per event, so the hot path is a dictionary lookup. Defaults
@@ -65,7 +88,21 @@ public sealed class WorkflowRunner
     {
         ArgumentNullException.ThrowIfNull(instance);
 
-        WorkflowDescriptor? descriptor = _deps.Registry.Resolve(instance.WorkflowName, instance.WorkflowVersion);
+        WorkflowDescriptor? descriptor;
+        try
+        {
+            descriptor = await _deps.Registry
+                .ResolveAsync(instance.WorkflowName, instance.WorkflowVersion, instance.TenantId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // A source that cannot say right now is an outage, not a verdict. Left to the caller it
+            // would only release the lease, and the instance would be re-claimed at once, in a loop.
+            return await ScheduleRetryAsync(instance, ex, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Null is the verdict: the version is gone, and no number of retries brings it back.
         if (descriptor is null)
         {
             await FinalizeAsync(instance, InstanceStatus.DeadStopped, null, "WorkflowVersionUnavailable", cancellationToken)
@@ -167,10 +204,22 @@ public sealed class WorkflowRunner
     {
         object? output = null;
 
+        // Every case here is listed in TranslatedEngineEvents, and the order matters: a subclass is
+        // matched before its base, because three framework events are subclasses of others with a
+        // different meaning (agent updates and responses are outputs; sub-workflow errors and
+        // warnings are workflow errors and warnings).
         await foreach (WorkflowEvent evt in run.WatchStreamAsync(cancellationToken).ConfigureAwait(false))
         {
             switch (evt)
             {
+                case SuperStepStartedEvent started:
+                    // Set on the way in, so the executor events of this superstep carry its number
+                    // rather than the previous one's.
+                    _currentSuperstep = started.StepNumber;
+                    await PublishAsync(instance, WorkflowEventTypes.SuperstepStarted,
+                        new { superstep = started.StepNumber }, null, cancellationToken).ConfigureAwait(false);
+                    break;
+
                 case SuperStepCompletedEvent step:
                     _currentSuperstep = step.StepNumber;
                     await PublishAsync(instance, WorkflowEventTypes.SuperstepCompleted,
@@ -178,17 +227,7 @@ public sealed class WorkflowRunner
                     break;
 
                 case ExecutorInvokedEvent invoked:
-                    if (_hostInvocationEvents.TryPeek(out string? hostExecutorId) &&
-                        string.Equals(hostExecutorId, invoked.ExecutorId, StringComparison.Ordinal))
-                    {
-                        _hostInvocationEvents.Dequeue();
-                    }
-                    else
-                    {
-                        await PublishAsync(instance, WorkflowEventTypes.ExecutorInvoked,
-                            new { executorId = invoked.ExecutorId, superstep = _currentSuperstep },
-                            invoked.ExecutorId, cancellationToken).ConfigureAwait(false);
-                    }
+                    await RecordEngineInvocationAsync(instance, invoked.ExecutorId, cancellationToken).ConfigureAwait(false);
                     break;
 
                 case ExecutorCompletedEvent completed:
@@ -223,6 +262,33 @@ public sealed class WorkflowRunner
                     await TransitionAsync(instance, InstanceStatus.AwaitingInput, null, cancellationToken).ConfigureAwait(false);
                     return new RunOutcome(InstanceStatus.AwaitingInput, null, null, null);
 
+                // Before WorkflowOutputEvent, which it derives from. Matched there, each fragment
+                // was stored as an output and became the instance's result in turn.
+                case AgentResponseUpdateEvent update:
+                    await PublishTransientAsync(instance, WorkflowEventTypes.AgentUpdate, new
+                    {
+                        executorId = update.ExecutorId,
+                        text = update.Update.Text,
+                        role = update.Update.Role?.Value,
+                        messageId = update.Update.MessageId
+                    }, update.ExecutorId, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                // Also before WorkflowOutputEvent. Still the run's output candidate — the framework
+                // means it as one, and an agent that ends a graph has nothing else to give — but
+                // recorded as what it is, with its usage.
+                case AgentResponseEvent response:
+                    output = response.Response;
+                    await PublishAsync(instance, WorkflowEventTypes.AgentResponse, new
+                    {
+                        executorId = response.ExecutorId,
+                        text = response.Response.Text,
+                        usage = response.Response.Usage is { } usage
+                            ? new { inputTokens = usage.InputTokenCount, outputTokens = usage.OutputTokenCount, totalTokens = usage.TotalTokenCount }
+                            : null
+                    }, response.ExecutorId, cancellationToken).ConfigureAwait(false);
+                    break;
+
                 case WorkflowOutputEvent outputEvent:
                     output = outputEvent.Data;
                     await PublishAsync(instance, WorkflowEventTypes.WorkflowOutput,
@@ -230,13 +296,40 @@ public sealed class WorkflowRunner
                         outputEvent.ExecutorId, cancellationToken).ConfigureAwait(false);
                     break;
 
-                case WorkflowErrorEvent errorEvent:
+                // Before WorkflowErrorEvent: a failed sub-workflow is a failed node of this graph,
+                // reported against the node that hosts it rather than against the whole workflow.
+                case SubworkflowErrorEvent subworkflowError:
                 {
-                    Exception error = errorEvent.Data as Exception
-                        ?? new InvalidOperationException(errorEvent.Data?.ToString() ?? "Workflow error.");
-                    return await ApplyFailureAsync(instance, descriptor, "workflow", error, cancellationToken)
+                    Exception error = ErrorOf(subworkflowError);
+                    await PublishAsync(instance, WorkflowEventTypes.ExecutorFailed, new
+                    {
+                        executorId = subworkflowError.SubworkflowId,
+                        superstep = _currentSuperstep,
+                        exceptionType = error.GetType().Name,
+                        message = error.Message
+                    }, subworkflowError.SubworkflowId, cancellationToken).ConfigureAwait(false);
+
+                    await LogAsync(instance, "Error", subworkflowError.SubworkflowId, error, cancellationToken).ConfigureAwait(false);
+                    return await ApplyFailureAsync(instance, descriptor, subworkflowError.SubworkflowId ?? "unknown", error, cancellationToken)
                         .ConfigureAwait(false);
                 }
+
+                case WorkflowErrorEvent errorEvent:
+                    return await ApplyFailureAsync(instance, descriptor, "workflow", ErrorOf(errorEvent), cancellationToken)
+                        .ConfigureAwait(false);
+
+                case SubworkflowWarningEvent subworkflowWarning:
+                    await PublishAsync(instance, WorkflowEventTypes.WorkflowWarning, new
+                    {
+                        message = subworkflowWarning.Data?.ToString(),
+                        subworkflowId = subworkflowWarning.SubWorkflowId
+                    }, subworkflowWarning.SubWorkflowId, cancellationToken).ConfigureAwait(false);
+                    break;
+
+                case WorkflowWarningEvent warning:
+                    await PublishAsync(instance, WorkflowEventTypes.WorkflowWarning,
+                        new { message = warning.Data?.ToString() }, null, cancellationToken).ConfigureAwait(false);
+                    break;
 
                 case LlmDeltaWorkflowEvent delta:
                     await PublishTransientAsync(instance, WorkflowEventTypes.LlmDelta,
@@ -244,13 +337,15 @@ public sealed class WorkflowRunner
                         delta.ExecutorId, cancellationToken).ConfigureAwait(false);
                     break;
 
+                // Flowline publishes its own workflow.started, with the attempt and whether it resumed.
+                case WorkflowStartedEvent:
+                    break;
+
                 default:
-                    // The class of bug rather than one instance of it: an unrecognised engine event
-                    // used to vanish in silence, which is how llm.delta stayed broken while being
-                    // written down in three places.
-                    _deps.Logger.LogDebug(
-                        "Unhandled workflow event {EventType} on instance {InstanceId}.",
-                        evt.GetType().Name, instance.InstanceId);
+                    // An event the engine raised is recorded or streamed; none is dropped. This used
+                    // to log at Debug and discard, which is how llm.delta stayed broken while being
+                    // written down in three places, and how a raw executor's own events vanished.
+                    await PublishEngineEventAsync(instance, evt, cancellationToken).ConfigureAwait(false);
                     break;
             }
         }
@@ -326,9 +421,13 @@ public sealed class WorkflowRunner
         IWorkflowAuditRecorder? audit)
     {
         gates[executor.Id] = gate;
+        _attached.Add(executor.Id);
+
+        // Middleware sees the executor the author wrote, not the adapter standing in for it.
+        Type executorType = executor is FrameworkExecutorAdapter adapter ? adapter.Inner.GetType() : executor.GetType();
 
         var descriptor = new ExecutorDescriptor(
-            executor.Id, executor.GetType(), instance.WorkflowName, instance.WorkflowVersion, gate.Mode)
+            executor.Id, executorType, instance.WorkflowName, instance.WorkflowVersion, gate.Mode)
         {
             Metadata = new Dictionary<string, object?>(executor.Metadata)
             {
@@ -357,17 +456,73 @@ public sealed class WorkflowRunner
                 instance.InstanceId, instance.TenantId, executor.Id,
                 _deps.Events, _deps.Sequencer, _notifications,
                 () => _currentSuperstep, _deps.Clock, instance.WorkflowName),
-            ExecutorInvoked = async (executorId, superstep) =>
-            {
-                _hostInvocationEvents.Enqueue(executorId);
-                await PublishAsync(instance, WorkflowEventTypes.ExecutorInvoked,
-                    new { executorId, superstep }, executorId, CancellationToken.None).ConfigureAwait(false);
-            },
+            DeliveryStarted = StartDelivery,
+            AnnounceBeforePark = (executorId, delivery) => AnnounceBeforeParkAsync(instance, executorId, delivery),
             SuperstepAccessor = () => _currentSuperstep
         };
 
         return (Executor)executor;
     }
+
+    private int StartDelivery(string executorId)
+    {
+        lock (_deliveriesStarted)
+        {
+            int delivery = _deliveriesStarted.GetValueOrDefault(executorId) + 1;
+            _deliveriesStarted[executorId] = delivery;
+            return delivery;
+        }
+    }
+
+    /// <summary>The engine's invoked event, recorded unless a parking delivery already announced it.</summary>
+    private async ValueTask RecordEngineInvocationAsync(WorkflowInstance instance, string executorId, CancellationToken cancellationToken)
+    {
+        if (!_attached.Contains(executorId))
+        {
+            await PublishInvokedAsync(instance, executorId, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        await _invocationRecord.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            int delivery = _engineInvocationsSeen.GetValueOrDefault(executorId) + 1;
+            _engineInvocationsSeen[executorId] = delivery;
+
+            if (_announcedThrough.GetValueOrDefault(executorId) < delivery)
+            {
+                await PublishInvokedAsync(instance, executorId, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _invocationRecord.Release();
+        }
+    }
+
+    /// <summary>A parking delivery's invocation, recorded unless the run loop already recorded it.</summary>
+    private async ValueTask AnnounceBeforeParkAsync(WorkflowInstance instance, string executorId, int delivery)
+    {
+        await _invocationRecord.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_engineInvocationsSeen.GetValueOrDefault(executorId) >= delivery)
+            {
+                return;
+            }
+
+            _announcedThrough[executorId] = delivery;
+            await PublishInvokedAsync(instance, executorId, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _invocationRecord.Release();
+        }
+    }
+
+    private ValueTask PublishInvokedAsync(WorkflowInstance instance, string executorId, CancellationToken cancellationToken)
+        => PublishAsync(instance, WorkflowEventTypes.ExecutorInvoked,
+            new { executorId, superstep = _currentSuperstep }, executorId, cancellationToken);
 
     private static ExecutorDelegate ResolveTerminal(IHostExecutor executor)
     {
@@ -408,6 +563,26 @@ public sealed class WorkflowRunner
             disposition = FailureDisposition.DeadStop;
         }
 
+        return await ApplyDispositionAsync(instance, disposition, error, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A failure with no definition to classify it — the registry could not resolve one — treated
+    /// as a classified <see cref="FailureDisposition.Retry"/>: the same attempts, lifetime and
+    /// backoff, and the same <see cref="InstanceStatus.Failed"/> once they run out.
+    /// </summary>
+    private Task<RunOutcome> ScheduleRetryAsync(WorkflowInstance instance, Exception error, CancellationToken cancellationToken)
+    {
+        _deps.Logger.LogWarning(error,
+            "Could not resolve {Workflow} {Version} for instance {InstanceId}; scheduling a retry.",
+            instance.WorkflowName, instance.WorkflowVersion, instance.InstanceId);
+
+        return ApplyDispositionAsync(instance, FailureDisposition.Retry, error, cancellationToken);
+    }
+
+    private async Task<RunOutcome> ApplyDispositionAsync(
+        WorkflowInstance instance, FailureDisposition disposition, Exception error, CancellationToken cancellationToken)
+    {
         DateTimeOffset now = _deps.Clock.GetUtcNow();
         int nextAttempt = instance.AttemptCount + 1;
         bool attemptsExhausted = nextAttempt >= instance.MaxAttempts;
@@ -540,6 +715,114 @@ public sealed class WorkflowRunner
                 instance.WorkflowName, EventDeliveryMode.StreamOnly),
             cancellationToken);
     }
+
+    /// <summary>
+    /// The engine event types the run loop translates by name. Kept beside the switch so an Agent
+    /// Framework upgrade that adds an event fails a test that enumerates the framework's events,
+    /// instead of the new event quietly taking the <c>custom.*</c> fallback.
+    /// </summary>
+    internal static IReadOnlyCollection<Type> TranslatedEngineEvents { get; } =
+    [
+        typeof(SuperStepStartedEvent), typeof(SuperStepCompletedEvent),
+        typeof(ExecutorInvokedEvent), typeof(ExecutorCompletedEvent), typeof(ExecutorFailedEvent),
+        typeof(RequestInfoEvent),
+        typeof(AgentResponseUpdateEvent), typeof(AgentResponseEvent), typeof(WorkflowOutputEvent),
+        typeof(SubworkflowErrorEvent), typeof(WorkflowErrorEvent),
+        typeof(SubworkflowWarningEvent), typeof(WorkflowWarningEvent),
+        typeof(WorkflowStartedEvent),
+        typeof(LlmDeltaWorkflowEvent)
+    ];
+
+    /// <summary>
+    /// Records an engine event the run loop has no case for, as <c>custom.&lt;kebab-case type
+    /// name&gt;</c> with its data serialised.
+    /// </summary>
+    /// <remarks>
+    /// The <c>custom.</c> prefix is the one <see cref="INodeNotifier.NotifyAsync"/> already uses, so an
+    /// executor's own events share a namespace with workflow-defined ones: they cannot shadow a
+    /// framework event, they pass through redaction, and the workflow's notification policy still
+    /// decides whether they are emitted.
+    /// </remarks>
+    private ValueTask PublishEngineEventAsync(WorkflowInstance instance, WorkflowEvent evt, CancellationToken cancellationToken)
+    {
+        Type type = evt.GetType();
+
+        // The framework's own non-public events are signals between its parts — a halt request, an
+        // internal stop — not things that happened in the workflow.
+        if (type.Assembly == typeof(WorkflowEvent).Assembly && !type.IsVisible)
+        {
+            return ValueTask.CompletedTask;
+        }
+
+        string? executorId = (evt as ExecutorEvent)?.ExecutorId;
+
+        return PublishAsync(instance, NodeNotifier.CustomPrefix + KebabName(type), new
+        {
+            executorId,
+            eventType = type.FullName,
+            data = ToJsonValue(evt.Data)
+        }, executorId, cancellationToken);
+    }
+
+    /// <summary><c>MagenticPlanCreatedEvent</c> becomes <c>magentic-plan-created</c>.</summary>
+    internal static string KebabName(Type type)
+    {
+        string name = type.Name;
+
+        int arity = name.IndexOf('`', StringComparison.Ordinal);
+        if (arity >= 0)
+        {
+            name = name[..arity];
+        }
+
+        // Every engine event ends in "Event"; repeating it in the name adds nothing.
+        if (name.Length > "Event".Length && name.EndsWith("Event", StringComparison.Ordinal))
+        {
+            name = name[..^"Event".Length];
+        }
+
+        var kebab = new System.Text.StringBuilder(name.Length + 8);
+        for (int i = 0; i < name.Length; i++)
+        {
+            char c = name[i];
+            if (char.IsUpper(c) && i > 0 &&
+                (char.IsLower(name[i - 1]) || char.IsDigit(name[i - 1]) ||
+                 (i + 1 < name.Length && char.IsLower(name[i + 1]) && char.IsUpper(name[i - 1]))))
+            {
+                kebab.Append('-');
+            }
+
+            kebab.Append(char.ToLowerInvariant(c));
+        }
+
+        return kebab.ToString();
+    }
+
+    /// <summary>
+    /// The event's data as JSON when it serialises, and as text when it does not: an unknown type's
+    /// payload is recorded either way rather than costing the event.
+    /// </summary>
+    private static object? ToJsonValue(object? data)
+    {
+        if (data is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.SerializeToElement(data, data.GetType(), JsonOptions.Default);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        {
+            return data.ToString();
+        }
+    }
+
+    private static Exception ErrorOf(WorkflowErrorEvent errorEvent)
+        => errorEvent.Exception
+           ?? errorEvent.Data as Exception
+           ?? new InvalidOperationException(errorEvent.Data?.ToString() ?? "Workflow error.");
 
     private ValueTask LogAsync(
         WorkflowInstance instance, string level, string? executorId, Exception error, CancellationToken cancellationToken)

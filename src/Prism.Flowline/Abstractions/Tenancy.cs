@@ -5,9 +5,15 @@ namespace Prism.Flowline.Abstractions;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Workflow definitions are global.</b> A definition is code: one registry, one set of versions,
-/// the same for everyone. Nothing about a definition is tenant-scoped, so nothing derived purely
-/// from one — the catalog, the node list, the graph shape — needs a tenant to answer.
+/// <b>Registered workflow definitions are global.</b> A definition the host was composed with is
+/// code: one registry, one set of versions, the same for everyone.
+/// </para>
+/// <para>
+/// <b>A sourced definition may belong to one tenant.</b> An <see cref="IWorkflowDefinitionSource"/>
+/// can mark what it returns as private through <see cref="ResolvedWorkflow.TenantId"/>. The registry
+/// then holds it apart from the shared definition and from every other tenant's, never serves it to a
+/// lookup made for another tenant — to that caller there is no such workflow — and carries the owner
+/// on the descriptor. That is why every path that resolves a definition passes the tenant it acts for.
 /// </para>
 /// <para>
 /// <b>Instances are tenant-scoped.</b> An instance is somebody's work, and every query path carries

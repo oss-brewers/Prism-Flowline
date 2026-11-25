@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+
+    <!-- Microsoft.Data.SqlClient will not open a connection in invariant globalization mode, which
+         Directory.Build.props turns on for everything else. Any host of the SQL Server stores has
+         to turn it back off; this one is no exception. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Testcontainers.MsSql" Version="4.17.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The stores under test and the contracts they are held to. Deliberately not the host: these
+         tests are about storage, and booting a deployable to reach its stores is what moving them
+         into their own project was for. -->
+    <ProjectReference Include="../../src/Prism.Flowline.Stores.SqlServer/Prism.Flowline.Stores.SqlServer.csproj" />
+    <ProjectReference Include="../../src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/DockerProbe.cs" Link="Shared/DockerProbe.cs" />
+    <Compile Include="../Shared/ContractCaseName.cs" Link="Shared/ContractCaseName.cs" />
+    <Using Include="Prism.Flowline.TestSupport" />
+  </ItemGroup>
+</Project>

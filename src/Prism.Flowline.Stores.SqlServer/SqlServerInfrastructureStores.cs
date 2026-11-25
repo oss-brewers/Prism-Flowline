@@ -7,7 +7,7 @@ using Microsoft.Agents.AI.Workflows;
 using Microsoft.Agents.AI.Workflows.Checkpointing;
 using Microsoft.EntityFrameworkCore;
 
-namespace Prism.Flowline.Service;
+namespace Prism.Flowline.Stores.SqlServer;
 
 // Serialization envelope for the approval row; an implementation detail of the SQL store.
 internal sealed record ApprovalDocument(ApprovalRequest Request, IReadOnlyList<ApprovalDecision> Decisions);
@@ -17,21 +17,31 @@ public sealed class SqlServerLogStore(IDbContextFactory<PrismDbContext> factory)
     public async ValueTask AppendAsync(InstanceLogEntry entry, CancellationToken cancellationToken)
     {
         await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        db.JsonRows.Add(Row("log", $"{entry.InstanceId}:{entry.Sequence}", entry));
+
+        // The sequence is where the instance had got to, not an identity: the runner logs with the
+        // one it has reached and the LLM executor with zero, so a key of (instance, sequence)
+        // refused the second entry of nearly every run. The suffix makes each entry its own row.
+        db.JsonRows.Add(Row("log", $"{entry.InstanceId}:{entry.Sequence}:{Guid.NewGuid():N}", entry));
         await db.SaveChangesAsync(cancellationToken);
     }
 
     public async ValueTask<IReadOnlyList<InstanceLogEntry>> QueryAsync(string instanceId, string? level, string? executorId, int limit, CancellationToken cancellationToken)
     {
         await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        List<string> payloads = await db.JsonRows.AsNoTracking().Where(row => row.Kind == "log" && row.Key.StartsWith(instanceId + ":"))
-            .Select(row => row.Payload).ToListAsync(cancellationToken);
-        IEnumerable<InstanceLogEntry> query = payloads
-            .Select(payload => JsonSerializer.Deserialize<InstanceLogEntry>(payload))
-            .Where(entry => entry is not null)!;
+        var rows = await db.JsonRows.AsNoTracking().Where(row => row.Kind == "log" && row.Key.StartsWith(instanceId + ":"))
+            .Select(row => new { row.Payload, row.UpdatedAt }).ToListAsync(cancellationToken);
+
+        // Oldest first, as the in-memory store reads, with the write time breaking a tie between
+        // entries logged in the same instant so they keep the order they were written in.
+        IEnumerable<InstanceLogEntry> query = rows
+            .Select(row => (Entry: JsonSerializer.Deserialize<InstanceLogEntry>(row.Payload), row.UpdatedAt))
+            .Where(item => item.Entry is not null)
+            .OrderBy(item => item.Entry!.LoggedAt)
+            .ThenBy(item => item.UpdatedAt)
+            .Select(item => item.Entry!);
         if (!string.IsNullOrWhiteSpace(level)) query = query.Where(entry => entry.Level.Equals(level, StringComparison.OrdinalIgnoreCase));
         if (!string.IsNullOrWhiteSpace(executorId)) query = query.Where(entry => entry.ExecutorId == executorId);
-        return query.OrderByDescending(entry => entry.LoggedAt).Take(Math.Clamp(limit, 1, 1000)).ToArray();
+        return query.Take(Math.Clamp(limit, 1, 1000)).ToArray();
     }
 
     private static JsonRow Row(string kind, string key, object value) => new()
@@ -55,10 +65,19 @@ public sealed class SqlServerAuditStore(IDbContextFactory<PrismDbContext> factor
     public async ValueTask<IReadOnlyList<AuditEntry>> QueryAsync(string? instanceId, int limit, CancellationToken cancellationToken)
     {
         await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        List<AuditEntry> entries = await db.JsonRows.AsNoTracking().Where(row => row.Kind == "audit")
+
+        // The instance is filtered in the database, before the limit. Taking the newest entries
+        // across every instance and filtering afterwards returned too few, or none, for an instance
+        // that other instances had out-written.
+        IQueryable<JsonRow> rows = instanceId is { Length: > 0 }
+            ? db.JsonRows.FromSql(
+                $"SELECT * FROM [PrismJsonRows] WHERE [Kind] = N'audit' AND JSON_VALUE([Payload], '$.InstanceId') = {instanceId}")
+            : db.JsonRows.Where(row => row.Kind == "audit");
+
+        List<string> payloads = await rows.AsNoTracking()
             .OrderByDescending(row => row.UpdatedAt).Take(Math.Clamp(limit, 1, 1000)).Select(row => row.Payload)
-            .ToListAsync(cancellationToken).ContinueWith(task => task.Result.Select(payload => JsonSerializer.Deserialize<AuditEntry>(payload)!).ToList(), cancellationToken);
-        return instanceId is null ? entries : entries.Where(entry => entry.InstanceId == instanceId).ToArray();
+            .ToListAsync(cancellationToken);
+        return payloads.Select(payload => JsonSerializer.Deserialize<AuditEntry>(payload)!).ToArray();
     }
 }
 
@@ -85,7 +104,8 @@ public sealed class SqlServerBlobStore(IDbContextFactory<PrismDbContext> factory
     public async ValueTask<byte[]> DownloadAsync(string uri, CancellationToken cancellationToken)
     {
         await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        JsonRow row = await db.JsonRows.AsNoTracking().SingleAsync(item => item.Kind == "blob" && item.Key == uri, cancellationToken);
+        JsonRow row = await db.JsonRows.AsNoTracking().SingleOrDefaultAsync(item => item.Kind == "blob" && item.Key == uri, cancellationToken)
+            ?? throw new KeyNotFoundException($"Blob '{uri}' not found.");
         return Convert.FromBase64String(row.Payload);
     }
 
@@ -203,36 +223,84 @@ public sealed class SqlServerApprovalStore(IDbContextFactory<PrismDbContext> fac
         => (await Documents(cancellationToken)).Select(doc => doc.Request).Where(request => request.State == ApprovalState.Pending && request.ExpiresAt <= now)
             .OrderBy(request => request.ExpiresAt).Take(max).ToArray();
 
-    public async ValueTask<bool> TryRecordDecisionAsync(string approvalId, ApprovalDecision decision, ApprovalState? newState, CancellationToken cancellationToken)
-    {
-        await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        JsonRow? row = await db.JsonRows.SingleOrDefaultAsync(item => item.Kind == "approval" && item.Key == approvalId, cancellationToken);
-        if (row is null) return false;
-        ApprovalDocument document = JsonSerializer.Deserialize<ApprovalDocument>(row.Payload)!;
-        if (document.Request.State != ApprovalState.Pending || document.Decisions.Any(item => item.DeciderId == decision.DeciderId)) return false;
-        row.Payload = JsonSerializer.Serialize(document with { Request = newState is null ? document.Request : document.Request with { State = newState.Value }, Decisions = [.. document.Decisions, decision] });
-        row.UpdatedAt = DateTimeOffset.UtcNow;
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
-    }
+    public ValueTask<bool> TryRecordDecisionAsync(string approvalId, ApprovalDecision decision, ApprovalState? newState, CancellationToken cancellationToken)
+        => TryChangeAsync(approvalId, document =>
+        {
+            // One vote per decider, compared as the in-memory store compares them.
+            if (document.Request.State != ApprovalState.Pending ||
+                document.Decisions.Any(item => string.Equals(item.DeciderId, decision.DeciderId, StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+
+            return document with
+            {
+                Request = newState is null ? document.Request : document.Request with { State = newState.Value },
+                Decisions = [.. document.Decisions, decision]
+            };
+        }, cancellationToken);
 
     public async ValueTask<IReadOnlyList<ApprovalDecision>> GetDecisionsAsync(string approvalId, CancellationToken cancellationToken)
         => (await ReadAsync(approvalId, cancellationToken))?.Decisions ?? [];
 
-    public async ValueTask<bool> TrySetStateAsync(string approvalId, ApprovalState state, CancellationToken cancellationToken)
-    {
-        await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
-        JsonRow? row = await db.JsonRows.SingleOrDefaultAsync(item => item.Kind == "approval" && item.Key == approvalId, cancellationToken);
-        if (row is null) return false;
-        ApprovalDocument document = JsonSerializer.Deserialize<ApprovalDocument>(row.Payload)!;
-        row.Payload = JsonSerializer.Serialize(document with { Request = document.Request with { State = state, EscalatedOnce = document.Request.EscalatedOnce || state == ApprovalState.Pending } });
-        await db.SaveChangesAsync(cancellationToken);
-        return true;
-    }
+    public ValueTask<bool> TrySetStateAsync(string approvalId, ApprovalState state, CancellationToken cancellationToken)
+        => TryChangeAsync(approvalId, document => document with
+        {
+            Request = document.Request with
+            {
+                State = state,
+                EscalatedOnce = document.Request.EscalatedOnce || state == ApprovalState.Pending
+            }
+        }, cancellationToken);
 
     public async ValueTask CancelForInstanceAsync(string instanceId, CancellationToken cancellationToken)
     {
-        foreach (ApprovalRequest request in await ListForInstanceAsync(instanceId, cancellationToken)) await TrySetStateAsync(request.ApprovalId, ApprovalState.Cancelled, cancellationToken);
+        // Pending ones only, checked inside the same conditional write: an approval decided while
+        // the instance was being cancelled keeps the decision it was given.
+        foreach (ApprovalRequest request in await ListForInstanceAsync(instanceId, cancellationToken))
+        {
+            await TryChangeAsync(request.ApprovalId, document => document.Request.State == ApprovalState.Pending
+                ? document with { Request = document.Request with { State = ApprovalState.Cancelled } }
+                : null, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Read, change and write one approval under its rowversion, re-reading when another writer got
+    /// there first. <paramref name="change"/> returns null to decline the write.
+    /// </summary>
+    /// <remarks>
+    /// Votes are kept inside the approval's document, so every vote is a read-modify-write of one
+    /// row. Without the retry, two approvers voting together had one of them thrown at — or, on a
+    /// quorum, told their vote was refused when it was only unlucky. Each round lets at least one
+    /// writer through, so the bound is only a backstop against a store that never settles.
+    /// </remarks>
+    private async ValueTask<bool> TryChangeAsync(
+        string approvalId, Func<ApprovalDocument, ApprovalDocument?> change, CancellationToken cancellationToken)
+    {
+        const int attempts = 64;
+        for (int attempt = 1; ; attempt++)
+        {
+            await using PrismDbContext db = await factory.CreateDbContextAsync(cancellationToken);
+            JsonRow? row = await db.JsonRows.SingleOrDefaultAsync(item => item.Kind == "approval" && item.Key == approvalId, cancellationToken);
+            if (row is null) return false;
+
+            ApprovalDocument? changed = change(JsonSerializer.Deserialize<ApprovalDocument>(row.Payload)!);
+            if (changed is null) return false;
+
+            row.Payload = JsonSerializer.Serialize(changed);
+            row.UpdatedAt = DateTimeOffset.UtcNow;
+
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+                return true;
+            }
+            catch (DbUpdateConcurrencyException) when (attempt < attempts)
+            {
+                // Another writer changed the approval between the read and the write; read it again.
+            }
+        }
     }
 
     private async Task<ApprovalDocument?> ReadAsync(string id, CancellationToken cancellationToken)
@@ -255,29 +323,66 @@ public sealed class SqlServerApprovalStore(IDbContextFactory<PrismDbContext> fac
     };
 }
 
+/// <remarks>
+/// <para>
+/// The index is oldest first, ordered by commit time and then by key. Ids are monotonic, so the key
+/// keeps the order total when two checkpoints share a commit time; without it the framework's
+/// resume point — the last element — was whichever the database happened to return last.
+/// </para>
+/// <para>
+/// A checkpoint's parent is a row of its own (<c>checkpoint-parent</c>, same key, the parent's id as
+/// payload) written in the same save, so parent filtering needs no new column and checkpoints
+/// written before it existed still read.
+/// </para>
+/// </remarks>
 public sealed class SqlServerCheckpointStore(IDbContextFactory<PrismDbContext> factory) : ICheckpointStore<JsonElement>
 {
+    internal const string Kind = "checkpoint";
+    private const string ParentKind = "checkpoint-parent";
+
     public async ValueTask<CheckpointInfo> CreateCheckpointAsync(string sessionId, JsonElement value, CheckpointInfo? parent = null)
     {
         string id = IdGenerator.NewId();
+        string key = $"{sessionId}:{id}";
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
         await using PrismDbContext db = await factory.CreateDbContextAsync();
-        db.JsonRows.Add(new JsonRow { Kind = "checkpoint", Key = $"{sessionId}:{id}", Payload = value.GetRawText(), UpdatedAt = DateTimeOffset.UtcNow });
+        db.JsonRows.Add(new JsonRow { Kind = Kind, Key = key, Payload = value.GetRawText(), UpdatedAt = now });
+        if (parent is not null)
+        {
+            db.JsonRows.Add(new JsonRow { Kind = ParentKind, Key = key, Payload = parent.CheckpointId, UpdatedAt = now });
+        }
+
         await db.SaveChangesAsync();
         return new CheckpointInfo(sessionId, id);
     }
 
     public async ValueTask<IEnumerable<CheckpointInfo>> RetrieveIndexAsync(string sessionId, CheckpointInfo? withParent = null)
     {
+        string prefix = sessionId + ":";
         await using PrismDbContext db = await factory.CreateDbContextAsync();
-        List<string> keys = await db.JsonRows.AsNoTracking().Where(row => row.Kind == "checkpoint" && row.Key.StartsWith(sessionId + ":"))
-            .OrderBy(row => row.UpdatedAt).Select(row => row.Key).ToListAsync();
-        return keys.Select(key => new CheckpointInfo(sessionId, key[(sessionId.Length + 1)..])).ToArray();
+
+        IQueryable<JsonRow> rows = db.JsonRows.AsNoTracking().Where(row => row.Kind == Kind && row.Key.StartsWith(prefix));
+        if (withParent is not null)
+        {
+            string parentId = withParent.CheckpointId;
+            IQueryable<string> children = db.JsonRows
+                .Where(row => row.Kind == ParentKind && row.Key.StartsWith(prefix) && row.Payload == parentId)
+                .Select(row => row.Key);
+            rows = rows.Where(row => children.Contains(row.Key));
+        }
+
+        List<string> keys = await rows.OrderBy(row => row.UpdatedAt).ThenBy(row => row.Key).Select(row => row.Key).ToListAsync();
+        return keys.Select(key => new CheckpointInfo(sessionId, key[prefix.Length..])).ToArray();
     }
 
     public async ValueTask<JsonElement> RetrieveCheckpointAsync(string sessionId, CheckpointInfo key)
     {
+        ArgumentNullException.ThrowIfNull(key);
+
         await using PrismDbContext db = await factory.CreateDbContextAsync();
-        JsonRow row = await db.JsonRows.AsNoTracking().SingleAsync(item => item.Kind == "checkpoint" && item.Key == $"{sessionId}:{key.CheckpointId}");
+        JsonRow row = await db.JsonRows.AsNoTracking().SingleOrDefaultAsync(item => item.Kind == Kind && item.Key == $"{sessionId}:{key.CheckpointId}")
+            ?? throw new KeyNotFoundException($"Checkpoint '{key.CheckpointId}' not found for session '{sessionId}'.");
         return JsonSerializer.Deserialize<JsonElement>(row.Payload);
     }
 }
@@ -285,13 +390,20 @@ public sealed class SqlServerCheckpointStore(IDbContextFactory<PrismDbContext> f
 public sealed class SqlServerCheckpointDescriber(IDbContextFactory<PrismDbContext> factory) : ICheckpointDescriber
 {
     public bool Exists(string sessionId, string checkpointId)
-        => factory.CreateDbContext().JsonRows.Any(row => row.Kind == "checkpoint" && row.Key == $"{sessionId}:{checkpointId}");
+    {
+        using PrismDbContext db = factory.CreateDbContext();
+        return db.JsonRows.Any(row => row.Kind == SqlServerCheckpointStore.Kind && row.Key == $"{sessionId}:{checkpointId}");
+    }
 
     public IReadOnlyList<(string CheckpointId, int SizeBytes, DateTimeOffset CommittedAt)> Describe(string sessionId)
-        => factory.CreateDbContext().JsonRows.AsNoTracking()
-            .Where(row => row.Kind == "checkpoint" && row.Key.StartsWith(sessionId + ":"))
+    {
+        using PrismDbContext db = factory.CreateDbContext();
+        return db.JsonRows.AsNoTracking()
+            .Where(row => row.Kind == SqlServerCheckpointStore.Kind && row.Key.StartsWith(sessionId + ":"))
             .OrderBy(row => row.UpdatedAt)
+            .ThenBy(row => row.Key)
             .AsEnumerable()
             .Select(row => (row.Key[(sessionId.Length + 1)..], row.Payload.Length, row.UpdatedAt))
             .ToArray();
+    }
 }

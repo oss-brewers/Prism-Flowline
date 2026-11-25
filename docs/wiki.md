@@ -24,6 +24,7 @@ This page is the repository-level technical wiki. It documents the implementatio
   - **[Full DSL authoring guide](dsl-authoring-guide.md)**
 - [Workflow audit records](#workflow-audit-records)
 - [Registering workflows and middleware](#registering-workflows-and-middleware)
+- [Embedding Flowline](#embedding-flowline) — [sources](#workflows-the-host-was-not-composed-with) · [framework executors](#framework-executors-as-nodes) · [proving a store](#proving-a-store)
 - [Instance lifecycle](#instance-lifecycle)
 - [Retries and failure classification](#retries-and-failure-classification)
 - [Checkpoints and resumption](#checkpoints-and-resumption)
@@ -1187,6 +1188,118 @@ public sealed class CustomExecutorMiddleware : IExecutorMiddleware
 
 Middleware can use `ExecutorInvocationContext.Items` and the shared `MiddlewareContextKeys` values for per-invocation data such as outbound call capture, LLM usage, and prompt version.
 
+## Embedding Flowline
+
+Flowline can run as the engine beneath another platform rather than as the host itself. A platform that keeps its workflows in its own database, compiles them from a canvas, and owns its tenants embeds Flowline like this:
+
+> **The embedding host owns the definitions, the tenants and the database. Flowline owns the run.**
+
+Calling `AddWorkflowHost` without `MapWorkflowApi` registers the runtime and exposes no routes. What follows covers three things: where definitions come from, which executors run, and what a store must do.
+
+### Workflows the host was not composed with
+
+Register a source, and the registry asks it for any workflow it does not have:
+
+```csharp
+builder.Services
+    .AddWorkflowHost(builder.Configuration)
+    .AddBackgroundServices()
+    .AddWorkflowSource<CanvasCatalog>();   // or .AddWorkflowSource(instance)
+
+public sealed class CanvasCatalog(ICanvasStore canvases, ICanvasCompiler compiler) : IWorkflowDefinitionSource
+{
+    public async ValueTask<ResolvedWorkflow?> FindAsync(WorkflowLookup lookup, CancellationToken ct)
+    {
+        // lookup.Version is null when the caller wants whatever is current.
+        Canvas? canvas = await canvases.FindPublishedAsync(lookup.Name, lookup.Version, lookup.TenantId, ct);
+        if (canvas is null) return null;                  // no such workflow: 404 / dead-stop
+
+        return new ResolvedWorkflow(compiler.Compile(canvas))
+        {
+            TenantId = canvas.IsShared ? null : canvas.OwnerTenantId
+        };
+    }
+}
+```
+
+**Resolution order.** First, a definition registered at start-up always wins. A source can add workflows and versions but cannot replace one the host was composed with, and a lookup with no version for a registered name never reaches a source. Next, when the lookup names a version, a definition a source already produced is reused: the tenant's own first, then the shared one. Finally, the sources are asked in registration order, and the first answer wins.
+
+**The four promises a source makes.**
+
+| Promise | Why |
+| --- | --- |
+| A version is immutable: two answers for one name and version describe the same graph | Instances, checkpoints and gate policies are keyed by name and version. A graph that changes under a parked instance resumes a checkpoint that no longer fits it |
+| It answers after a restart, on any replica | An instance resolves its definition again on every resume, retry and claim. This is why the contract is pull rather than push: a definition handed to one process would be gone after the first restart |
+| Null means "no such workflow"; an exception means "cannot say right now" | A start for an unknown name is a 404, and a run whose version has gone is dead-stopped. A source that throws fails the start with a 500 and nothing created, or reschedules the run with the ordinary retry backoff and attempt budget |
+| It returns what it was asked for | A definition whose name differs from the lookup, whose version differs from the one asked for, or that has no version is refused loudly, as a defect in the source |
+
+A sourced definition is also refused if it declares an invalid notification name (the check start-up applies) or any domain-event trigger, because triggers are subscribed from the start-up catalog and would never fire.
+
+**Tenant-private definitions.** Setting `ResolvedWorkflow.TenantId` makes a definition private to that tenant. The registry holds it apart from the shared definition and from every other tenant's. It never returns it for a lookup made on behalf of another tenant: to that caller there is no such workflow, so a start returns 404 just as it would for an unknown name. The owner is carried on `WorkflowDescriptor.TenantId`. Operator paths acting for the all-tenants scope (`0`) can resolve a private definition, for example to set a host-wide gate policy on it. A lookup that names no tenant sees shared definitions only.
+
+**What is held.** Each replica holds up to `WorkflowHost:Registry:ResolvedCapacity` sourced definitions (default 1,024), least recently used first out. Dropping one is harmless: a run in progress keeps its descriptor, and the next lookup asks the source again. A lookup with no version goes to the source every time, because only the source knows when "current" moves; the version it names is then served from what is held, so one version is one object. Concurrent first lookups for one workflow share a single trip to the source, so a burst of starts compiles a new graph once. A caller that cancels its own wait does not cancel the lookup for the others. A failure is never held: the next lookup asks again.
+
+`IWorkflowRegistry.Invalidate(name, version, tenantId)` forgets held definitions on this replica: one version, one tenant's (`0` means the shared ones), or every one for a name. It exists for a host that withdraws a draft, not as a way to change a published version.
+
+**What deliberately does not change.**
+
+- `GET /workflows` and `GET /workflows/{name}` list start-up definitions only. A source is asked for one workflow at a time and cannot be enumerated, so a host with sourced workflows lists them from its own storage. Every route that resolves by name and version works for a sourced workflow, including `GET /workflows/{name}/versions/{version}/nodes` and all instance routes.
+- Gate policies need nothing new. A sourced workflow has a real name and version, so a tenant configures its nodes like any other's.
+- The synchronous `IWorkflowRegistry.Resolve` remains for callers that cannot await. It sees start-up definitions and shared sourced definitions already held, and never asks a source. Everything inside the library resolves with `ResolveAsync` and the tenant it acts for.
+
+A DSL document works as a source's answer too: return `DslWorkflowDefinition.Create(DslParser.ParseOrThrow(text))`. Its `DocumentHash` is a direct way to keep the immutability promise.
+
+### Framework executors as nodes
+
+A canvas compiler produces Agent Framework executors, not `HostExecutor<TIn, TOut>`. `Node` takes those as well:
+
+```csharp
+ExecutorBinding review = context.Node(compiledNode, gate => gate
+    .Mode(ExecutionMode.RequireApproval)
+    .Reason("CanvasReview"));
+```
+
+An adapter stands in the graph in the executor's place, with the same id and the same accepted, sent and yielded types, so the graph is wired exactly as it would be with `RawNode`. Each message is handled as a host executor handles one: the gate is evaluated, the run parks or the message is rejected, and the executor middleware pipeline runs, with the wrapped executor at its centre. The node is listed in the catalog as configurable, so a tenant can gate it without the canvas declaring a gate.
+
+- **The event stream is unchanged.** A wrapped executor produces the same events, in the same order and with the same ids, as the same executor bound raw. Invocations of every attached executor are recorded from the engine's own events, in stream order; a delivery that parks announces itself first, so its `executor.invoked` always precedes the approval it raises.
+- **Lifecycle hooks are forwarded.** Executors that keep state in fields and save it in `OnCheckpointingAsync` survive a resume. The forwarding uses reflection over five `protected internal` hooks. If an Agent Framework upgrade renames one, a Flowline test fails, and the adapter refuses to construct rather than silently losing state.
+- **Middleware observes, but cannot redirect.** Middleware sees the wrapped executor's result, exception and elapsed time. It cannot replace what the executor has already sent.
+
+**A gate in front of what cannot carry one.** `AIAgent` bindings, request ports and sub-workflow bindings are factories, not executor instances, so the adapter does not apply to them. Bind them with `RawNode`, and put a gate in front:
+
+```csharp
+ExecutorBinding approve = context.Gate<OrderContext>("approve-dispatch", gate => gate
+    .Mode(ExecutionMode.RequireApproval)
+    .AllowModification());
+ExecutorBinding dispatch = context.RawNode(dispatchAgent.BindAsExecutor());
+
+builder.AddEdge(prepare, approve).AddEdge(approve, dispatch);
+```
+
+`Gate<T>` is an identity node. Once the gate allows it, the message is passed on unchanged, or with an approver's amendment when the gate permits one. It adds one node and one pair of executor events to the graph. It does not bring middleware to the node behind it.
+
+The engine's own events from these executors are recorded too. See [Events from framework executors](#events-from-framework-executors).
+
+The design and its reasoning are in the embedded-host design document. The adapter spike that settled what Agent Framework permits is in [`spikes/framework-executor-adapter/REPORT.md`](../spikes/framework-executor-adapter/REPORT.md).
+
+### Proving a store
+
+A host that brings its own database brings its own stores. `Prism.Flowline.Testing` holds one contract per store interface: instances, events, approvals, gate policies, logs, audit, audit records, blobs, domain-event subscriptions, checkpoints and the cache. Each contract states as runnable cases the rules the interface remarks describe: optimistic transitions, terminal states that stay terminal, a claim that hands each instance to one replica under contention, gap-free event sequences, one winning decision.
+
+```csharp
+var contract = new InstanceStoreContract(context =>
+    ValueTask.FromResult<IInstanceStore>(new PostgresInstanceStore(dataSource, context.Clock)));
+
+foreach (ContractCase @case in contract.Cases)
+{
+    await @case.Run();   // or one [Theory] row per case under your own test framework
+}
+```
+
+The package depends on `Prism.Flowline` alone and on no test framework or assertion library, so it runs under xunit 2 or 3, NUnit, MSTest or a console loop. A failed case throws `StoreContractException` naming the rule. Each case gets a fresh context with its own clock and its own tenant and ids, so a provider's whole suite can share one database. The package README walks through writing a provider's test class.
+
+Both stores in this repository are held to every contract. The in-memory stores run them in `Prism.Flowline.UnitTests`, and the SQL Server stores (`Prism.Flowline.Stores.SqlServer`) run them in `Prism.Flowline.StoreTests` on a Testcontainers SQL Server. The SQL Server run, the first time those stores were ever tested, found and fixed a dozen defects, from a claim that was not atomic to lease renewal that never checked the owner.
+
 ## Instance lifecycle
 
 The control-plane status is a superset of the Agent Framework run status.
@@ -1392,17 +1505,19 @@ Every durable instance event has a monotonically increasing per-instance `Sequen
 Important event types include:
 
 - `workflow.started`
+- `superstep.started`, `superstep.completed`
 - `executor.invoked`
 - `executor.completed`
 - `executor.failed`
-- `superstep.completed`
 - `approval.requested`
 - `approval.decided`
 - `approval.expired`
 - `request.pending`
 - `llm.completed`
 - `llm.delta` (transient — see below)
-- `custom.<name>` (workflow-defined — see below)
+- `agent.update` (transient), `agent.response` — from an Agent Framework agent in the graph
+- `workflow.warning`
+- `custom.<name>` (workflow-defined, or an engine event with no name of its own — see below)
 - `event.triggered`, `event.delivered`, `event.wait_expired`
 - `workflow.output`
 - `workflow.terminated`
@@ -1509,6 +1624,27 @@ Declared `Emits` names are validated at startup and surfaced on `GET /workflows/
 A transient event takes no sequence number and is written to SSE without an `id:` field. That keeps the durable sequence gapless, and it leaves a reconnecting client's `Last-Event-ID` pinned to the last durable event — so a reconnect delivers the stored history plus whatever is streaming now, and never waits for a chunk that no longer exists. A token stream is not resumable, and the transport says so.
 
 Streaming is opt-in per node via `LlmOptions.StreamDeltas`, which defaults to `false`.
+
+`agent.update` is transient in the same way: one per streamed update from an Agent Framework agent, with the full answer stored once as `agent.response`.
+
+### Events from framework executors
+
+The run loop records or streams every event the engine raises; none is dropped. Raw executors, `AIAgent` bindings and wrapped executors all raise engine events. They become:
+
+| Engine event | Recorded as | Delivery |
+| --- | --- | --- |
+| `SuperStepStartedEvent`, `SuperStepCompletedEvent` | `superstep.started`, `superstep.completed` | Stored |
+| `AgentResponseUpdateEvent` | `agent.update` — `executorId`, `text`, `role`, `messageId` | Stream only, no sequence number, like `llm.delta` |
+| `AgentResponseEvent` | `agent.response` — `executorId`, `text`, `usage` when reported. It is the run's result if the agent ends the graph | Stored |
+| `WorkflowOutputEvent` | `workflow.output` | Stored |
+| `WorkflowWarningEvent`, `SubworkflowWarningEvent` | `workflow.warning` — `message`, and `subworkflowId` for the latter | Stored |
+| `SubworkflowErrorEvent` | `executor.failed` against the sub-workflow's node, then the workflow's failure classification | Stored |
+| `WorkflowStartedEvent`, and the framework's internal halt signals | Nothing: Flowline records its own `workflow.started`, and a halt is how a gate parks | — |
+| Any other event, including an executor's own `WorkflowEvent` or `ExecutorEvent` subclass | `custom.<type-name-in-kebab-case>` (`ShipmentBookedEvent` becomes `custom.shipment-booked`) with `executorId`, `eventType` and the serialised `data` | Stored |
+
+The fallback uses the same `custom.` prefix as `Runtime.Notify`, so an executor's own events cannot shadow a framework event. They are also redacted like any payload, and they honour the workflow's notification policy. A test enumerates the public event types of the pinned Agent Framework version, so an upgrade that adds one fails until someone decides how to record it.
+
+Agent updates used to match the output case, because `AgentResponseUpdateEvent` derives from `WorkflowOutputEvent`. Each fragment was stored as `workflow.output` and became the instance's result in turn. They are now matched first.
 
 ### LLM telemetry
 
@@ -1849,10 +1985,15 @@ Configuration is bound from the `WorkflowHost` section. Defaults are defined in 
     "Egress": {
       "Enforce": true,
       "AllowedHosts": ["api.example.com"]
+    },
+    "Registry": {
+      "ResolvedCapacity": 1024
     }
   }
 }
 ```
+
+`Registry:ResolvedCapacity` bounds how many definitions from an `IWorkflowDefinitionSource` one replica holds; see [Embedding Flowline](#embedding-flowline).
 
 ### Host-supplied sections
 
@@ -1970,40 +2111,31 @@ The options distinguish instance, checkpoint, event, and audit retention. With i
 
 ## NuGet package
 
-The framework library ships as `Prism.Flowline` on GitHub Packages. The deployable host
-(`Prism.Flowline.Service`) is a reference implementation and is deliberately not packaged — it exists to
-show how to wire concrete infrastructure and to host the control-plane UI.
+The framework library ships as `Prism.Flowline` on nuget.org, and the store-contract kit as `Prism.Flowline.Testing` beside it. Neither needs a feed or a credential to restore. The deployable host (`Prism.Flowline.Service`) and the infrastructure adapters are deliberately not packaged. The host is a reference implementation of how to wire concrete infrastructure and host the control-plane UI.
 
 ```bash
-dotnet add package Prism.Flowline --version 1.0.0
+dotnet add package Prism.Flowline
+dotnet add package Prism.Flowline.Testing   # in a storage provider's test project
 ```
 
-Packaging is declared in `src/Prism.Flowline/Prism.Flowline.csproj`. The root `Directory.Build.props` sets
-`IsPackable=false` so a solution-level `dotnet pack` emits exactly one package; the library opts back
-in. The package embeds its own README and the MIT licence, ships XML documentation, and produces a
-`.snupkg` symbol package alongside.
+Packaging is declared in each project file. The root `Directory.Build.props` sets `IsPackable=false`, so a solution-level `dotnet pack` emits only the two packages that opt back in. Each package embeds its own README and the MIT licence, ships XML documentation, and produces a `.snupkg` symbol package alongside.
 
-Two workflows publish the package.
+`.github/workflows/ci.yml` packs both packages on every push and pull request as a `<gitversion>-ci.<run>` workflow artifact. That proves every build still packs and gives integration work something to restore locally. It never publishes: nuget.org versions are permanent, and a package per commit would bury the real releases.
 
-`.github/workflows/ci.yml` publishes a prerelease on every push to `master`. Its `publish` job runs
-after `build-test` and is gated to `master` pushes on this repository, so pull requests, feature
-branches, and forks build and test without ever pushing a package. The version is the GitVersion
-value plus a `-ci.<run_number>` suffix, which keeps a plain version number meaning "tagged release"
-and orders every CI build below it. The job packs without `--no-build` so the assembly and the
-package carry the same version.
+`.github/workflows/publish-package.yml` publishes on a `v*` tag or by manual dispatch. It resolves the version from the workflow input, then the tag, then the `<Version>` in the project file. It runs the full suite with Docker required, then pushes both packages and their symbols to nuget.org. It authenticates through nuget.org trusted publishing: the job exchanges its GitHub OIDC token for an API key valid for one hour, so no long-lived key is stored. Two things must exist before the first tag:
 
-`.github/workflows/publish-package.yml` publishes stable versions on `v*` tags or manual dispatch,
-resolving the version from the workflow input, then the tag, then the `<Version>` in the project
-file.
+- a trusted publishing policy on nuget.org for owner `oss-brewers`, repository `Prism-Flowline`, workflow file `publish-package.yml`;
+- the repository secret `NUGET_USER`, holding the nuget.org profile name (not the email address) of the account that owns the policy.
 
-Both push with `--skip-duplicate` (GitHub Packages rejects overwriting a published version, so
-re-runs stay idempotent) and `--no-symbols` (the feed does not accept `.snupkg`), and both upload the
-package as a build artifact before pushing.
+A prerelease for integration work is a prerelease tag (`v1.1.0-beta.1`). The push uses `--skip-duplicate`, so re-running a tag is harmless.
+
+The repository's own `nuget.config` clears every other source and lists nuget.org only, so a clean clone restores with no credential.
 
 To verify a package locally before publishing:
 
 ```bash
 dotnet pack src/Prism.Flowline -c Release -o artifacts
+dotnet pack src/Prism.Flowline.Testing -c Release -o artifacts
 ```
 
 ## Containers and GHCR
@@ -2197,7 +2329,7 @@ dotnet test --configuration Release --no-build
 
 ### A workflow is not listed
 
-Confirm the definition is registered with `.AddWorkflow<T>()` or `.AddWorkflow(definition)`, that the host calls `AddWorkflowHost(...)`, and that the application is running the expected build.
+Confirm the definition is registered with `.AddWorkflow<T>()` or `.AddWorkflow(definition)`, that the host calls `AddWorkflowHost(...)`, and that the application is running the expected build. A workflow that comes from an `IWorkflowDefinitionSource` is never listed by `GET /workflows`, by design; it still starts and runs by name.
 
 ### A start request returns validation errors
 

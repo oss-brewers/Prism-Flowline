@@ -126,8 +126,25 @@ public sealed class HostExecutorRuntime
     /// </summary>
     public INodeNotifier? Notify { get; init; }
 
-    /// <summary>Called when a host executor begins handling a message, before gate evaluation.</summary>
-    public Func<string, int, ValueTask>? ExecutorInvoked { get; init; }
+    /// <summary>
+    /// Called first thing when an executor begins handling a message, before anything is awaited.
+    /// Returns the delivery's number within this run for this executor — the first message is 1 —
+    /// which is how <see cref="AnnounceBeforePark"/> says which delivery it means.
+    /// </summary>
+    public Func<string, int>? DeliveryStarted { get; init; }
+
+    /// <summary>
+    /// Called when a delivery is about to park on an approval gate, before the approval is raised,
+    /// with the number <see cref="DeliveryStarted"/> gave it.
+    /// </summary>
+    /// <remarks>
+    /// An executor does not announce its invocations otherwise: the run loop records the engine's own
+    /// invoked event, in stream order, after the previous node's completion. Only parking needs
+    /// <c>executor.invoked</c> on the stream before the run loop might reach it, so that it precedes
+    /// the approval the delivery raises. The run loop publishes each delivery's invocation exactly
+    /// once, whichever of the two reaches it first.
+    /// </remarks>
+    public Func<string, int, ValueTask>? AnnounceBeforePark { get; init; }
 
     /// <summary>Ambient superstep, updated by the run loop as the engine advances.</summary>
     public Func<int>? SuperstepAccessor { get; init; }
@@ -166,11 +183,7 @@ public abstract class HostExecutor<TIn, TOut> : Executor<TIn, TOut>, IHostExecut
         ArgumentNullException.ThrowIfNull(context);
 
         object? input = message;
-
-        if (Runtime.ExecutorInvoked is { } executorInvoked)
-        {
-            await executorInvoked(Id, Runtime.CurrentSuperstep).ConfigureAwait(false);
-        }
+        int delivery = Runtime.DeliveryStarted?.Invoke(Id) ?? 0;
 
         if (Runtime.Gates is { } gates)
         {
@@ -185,6 +198,11 @@ public abstract class HostExecutor<TIn, TOut> : Executor<TIn, TOut>, IHostExecut
 
                 case GateOutcomeKind.Pause:
                     // Nothing downstream of this point has run, so no side effect has occurred.
+                    if (Runtime.AnnounceBeforePark is { } announce)
+                    {
+                        await announce(Id, delivery).ConfigureAwait(false);
+                    }
+
                     if (Runtime.Approvals is { } approvals)
                     {
                         await approvals.RaiseAsync(
@@ -196,7 +214,7 @@ public abstract class HostExecutor<TIn, TOut> : Executor<TIn, TOut>, IHostExecut
                     return null!;   // never auto-sent: the engine skips null handler results
 
                 case GateOutcomeKind.ProceedApproved:
-                    input = outcome.ModifiedInput ?? message;
+                    input = outcome.ModifiedInput is { } amended ? BindAmended(amended) : message;
                     break;
 
                 case GateOutcomeKind.Proceed:
@@ -206,6 +224,38 @@ public abstract class HostExecutor<TIn, TOut> : Executor<TIn, TOut>, IHostExecut
         }
 
         return await InvokeThroughPipelineAsync(input, context, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// An approver's amendment arrives as the JSON they submitted, and the node must run on its
+    /// declared input type. Passed through untouched, the amendment failed the cast in
+    /// <see cref="ExecuteTerminalAsync"/> and dead-stopped an instance whose approval read Approved.
+    /// </summary>
+    private TIn BindAmended(object amended)
+    {
+        if (amended is TIn typed)
+        {
+            return typed;
+        }
+
+        if (amended is not System.Text.Json.JsonElement json)
+        {
+            throw new InvalidOperationException(
+                $"Executor '{Id}' was approved with a modified input of type '{amended.GetType().Name}', " +
+                $"which is neither its input type '{typeof(TIn).Name}' nor JSON.");
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<TIn>(json, Core.JsonOptions.Default)
+                ?? throw new InvalidOperationException(
+                    $"Executor '{Id}' was approved with a modified input that binds to null.");
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Executor '{Id}' was approved with a modified input that does not bind to '{typeof(TIn).Name}': {ex.Message}", ex);
+        }
     }
 
     private async ValueTask<TOut> InvokeThroughPipelineAsync(

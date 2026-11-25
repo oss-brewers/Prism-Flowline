@@ -15,5 +15,10 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Prism.Flowline/Prism.Flowline.csproj" />
+    <!-- The store contracts, run here against the library's in-memory stores. -->
+    <ProjectReference Include="../../src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/ContractCaseName.cs" Link="Shared/ContractCaseName.cs" />
   </ItemGroup>
 </Project>

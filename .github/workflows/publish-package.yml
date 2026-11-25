@@ -1,4 +1,17 @@
-name: Package (Publish to GitHub Packages)
+name: Package (Publish to nuget.org)
+
+# Releases the library and its store-contract kit to nuget.org, where anyone can restore them with no
+# feed configuration and no credential. Triggered by a `v*` tag, or by hand with an explicit version.
+#
+# Authentication is nuget.org trusted publishing: this job exchanges its GitHub OIDC token for an API
+# key valid for one hour, so no long-lived key is stored anywhere. It needs, once, on nuget.org:
+#   - a trusted publishing policy for repository owner `oss-brewers`, repository `Prism-Flowline`,
+#     workflow file `publish-package.yml` (the file name only), no environment;
+#   - the repository secret NUGET_USER holding the nuget.org profile name (not the email address)
+#     of the account that owns the policy.
+#
+# A prerelease tag (v1.0.0-rc.1) is the way to publish something for integration work; nuget.org
+# versions are permanent, so there is deliberately no per-commit publishing.
 
 on:
   push:
@@ -12,14 +25,14 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  id-token: write   # the OIDC token trusted publishing exchanges for a temporary API key
 
 env:
-  PROJECT: src/Prism.Flowline/Prism.Flowline.csproj
-  FEED: https://nuget.pkg.github.com/oss-brewers/index.json
+  NUGET_SOURCE: https://api.nuget.org/v3/index.json
 
 jobs:
   publish:
+    if: github.repository == 'oss-brewers/Prism-Flowline'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -41,26 +54,29 @@ jobs:
             VERSION="${GITHUB_REF#refs/tags/v}"
           else
             # Fall back to the version declared in the project file.
-            VERSION=$(grep -oPm1 '(?<=<Version>)[^<]+' "${PROJECT}")
+            VERSION=$(grep -oPm1 '(?<=<Version>)[^<]+' src/Prism.Flowline/Prism.Flowline.csproj)
           fi
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Publishing Prism.Flowline ${VERSION}"
+          echo "Publishing Prism.Flowline and Prism.Flowline.Testing ${VERSION}"
 
       - name: Restore
         run: dotnet restore
 
+      # Built with the release version, so the assemblies and the packages carry the same one.
       - name: Build
-        run: dotnet build -c Release --no-restore
+        run: dotnet build -c Release --no-restore -p:Version=${{ steps.version.outputs.value }}
 
-      # Same reasoning as ci.yml: the broker suite skips itself without a container runtime, and a
-      # release must not be cut from a run that quietly tested less than the CI leg did.
+      # Same reasoning as ci.yml: the broker and store suites skip themselves without a container
+      # runtime, and a release must not be cut from a run that quietly tested less than the CI leg did.
       - name: Verify container runtime
         run: docker version
 
+      # Kept in step with ci.yml and the images the test fixtures name.
       - name: Pre-pull test container images
         run: |
           docker pull redis:7-alpine
           docker pull rabbitmq:4-alpine
+          docker pull mcr.microsoft.com/mssql/server:2022-latest
 
       # The package is the product; shipping it untested is not worth the few minutes saved.
       - name: Test
@@ -68,12 +84,12 @@ jobs:
         env:
           PRISM_REQUIRE_DOCKER: 'true'
 
+      # Each project produces a .nupkg and a .snupkg; nuget.org takes the symbols beside the package.
       - name: Pack
-        run: >
-          dotnet pack ${{ env.PROJECT }}
-          -c Release --no-build
-          -p:Version=${{ steps.version.outputs.value }}
-          -o artifacts
+        run: |
+          for project in src/Prism.Flowline/Prism.Flowline.csproj src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj; do
+            dotnet pack "$project" -c Release --no-build -p:Version=${{ steps.version.outputs.value }} -o artifacts
+          done
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -81,20 +97,18 @@ jobs:
           name: nupkg-${{ steps.version.outputs.value }}
           path: artifacts/*
 
-      - name: Push to GitHub Packages
-        run: |
-          # nuget.config already declares the `github` source, so add the credentials to it rather
-          # than adding it again (which fails with "name ... has already been added").
-          dotnet nuget update source github \
-            --source "${FEED}" \
-            --username "${{ github.actor }}" \
-            --password "${{ secrets.GITHUB_TOKEN }}" \
-            --store-password-in-clear-text
+      # Requested here, just before the push, because the key lasts an hour.
+      - name: NuGet login (OIDC to temporary API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
 
-          # --skip-duplicate keeps re-runs idempotent; GitHub Packages rejects overwriting an
-          # existing version. --no-symbols because the feed does not accept .snupkg.
-          dotnet nuget push "artifacts/*.nupkg" \
-            --source github \
-            --api-key "${{ secrets.GITHUB_TOKEN }}" \
-            --skip-duplicate \
-            --no-symbols
+      # The .snupkg beside each .nupkg is pushed with it. --skip-duplicate keeps a re-run of the same
+      # tag idempotent, since nuget.org refuses to overwrite a published version.
+      - name: Push to nuget.org
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --source ${{ env.NUGET_SOURCE }}
+          --skip-duplicate

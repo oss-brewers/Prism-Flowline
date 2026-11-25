@@ -29,10 +29,11 @@ public class WorkflowRunnerTests
         IWorkflowDefinition definition,
         MiddlewarePipelineFactory? pipelines = null,
         IApprovalService? approvals = null,
-        WorkflowHostOptions? options = null)
+        WorkflowHostOptions? options = null,
+        IWorkflowRegistry? registry = null)
         => new(new WorkflowRunnerDependencies
         {
-            Registry = new WorkflowRegistry([definition]),
+            Registry = registry ?? new WorkflowRegistry([definition]),
             Instances = _instances,
             Events = new DirectNotificationSink(_events),
             Sequencer = _sequencer,
@@ -248,6 +249,50 @@ public class WorkflowRunnerTests
 
         outcome.Status.Should().Be(InstanceStatus.DeadStopped);
         outcome.TerminalReason.Should().Be("WorkflowVersionUnavailable");
+    }
+
+    [Fact]
+    public async Task A_source_outage_reschedules_the_run_instead_of_dead_stopping_it()
+    {
+        WorkflowInstance instance = await SeedAsync("sourced", "1.0.0");
+
+        RunOutcome outcome = await Build(new LinearWorkflow(), registry: UnreachableSourceRegistry())
+            .RunAsync(instance, default);
+
+        outcome.Status.Should().Be(InstanceStatus.RetryScheduled);
+
+        WorkflowInstance? stored = await _instances.GetAsync("i1", default);
+        stored!.Status.Should().Be(InstanceStatus.RetryScheduled);
+        stored.AttemptCount.Should().Be(1);
+        stored.NextRetryAt.Should().BeAfter(_clock.GetUtcNow(), "backed off, not re-claimed at once");
+        stored.LeaseOwner.Should().BeNull();
+        stored.TerminalReason.Should().Contain("catalog unreachable");
+
+        (await EventsAsync()).Should().NotContain(e => e.EventType == WorkflowEventTypes.WorkflowStarted,
+            "nothing ran: there was no graph to run");
+    }
+
+    [Fact]
+    public async Task A_source_outage_exhausts_attempts_like_any_retry()
+    {
+        await SeedAsync("sourced", "1.0.0");
+        await _instances.UpdateAsync("i1", m => m.AttemptCount = 4, default);   // MaxAttempts defaults to 5
+        WorkflowInstance instance = (await _instances.GetAsync("i1", default))!;
+
+        RunOutcome outcome = await Build(new LinearWorkflow(), registry: UnreachableSourceRegistry())
+            .RunAsync(instance, default);
+
+        outcome.Status.Should().Be(InstanceStatus.Failed);
+        (await _instances.GetAsync("i1", default))!.Status.Should().Be(InstanceStatus.Failed);
+    }
+
+    private static WorkflowRegistry UnreachableSourceRegistry()
+        => new([], [new UnreachableSource()]);
+
+    private sealed class UnreachableSource : IWorkflowDefinitionSource
+    {
+        public ValueTask<ResolvedWorkflow?> FindAsync(WorkflowLookup lookup, CancellationToken cancellationToken)
+            => throw new TimeoutException("catalog unreachable");
     }
 
     [Fact]

@@ -26,5 +26,14 @@
     <ProjectReference Include="../../src/Prism.Flowline/Prism.Flowline.csproj" />
     <ProjectReference Include="../../src/Prism.Flowline.Cache.Redis/Prism.Flowline.Cache.Redis.csproj" />
     <ProjectReference Include="../../src/Prism.Flowline.Messaging.RabbitMQ/Prism.Flowline.Messaging.RabbitMQ.csproj" />
+
+    <!-- The cache contract the Redis store is held to. -->
+    <ProjectReference Include="../../src/Prism.Flowline.Testing/Prism.Flowline.Testing.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/DockerProbe.cs" Link="Shared/DockerProbe.cs" />
+    <Compile Include="../Shared/ContractCaseName.cs" Link="Shared/ContractCaseName.cs" />
+    <Using Include="Prism.Flowline.TestSupport" />
   </ItemGroup>
 </Project>

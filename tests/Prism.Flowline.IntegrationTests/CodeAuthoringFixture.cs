@@ -186,6 +186,34 @@ internal sealed class RawNodeWorkflow(InputLedger ledger) : IWorkflowDefinition<
     }
 }
 
+/// <summary>
+/// A gate in front of a raw node, the only way to require approval before one: <c>prepare</c>, then
+/// the gate <c>approve</c>, then <c>raw-settle</c> bound raw. Amendments are allowed.
+/// </summary>
+internal sealed class GateBeforeRawWorkflow(InputLedger ledger) : IWorkflowDefinition<OrderContext, OrderResult>
+{
+    public string Name => "gate-before-raw";
+    public string Version => "1.0.0";
+
+    public ValueTask<Workflow> BuildAsync(WorkflowBuildContext context, CancellationToken cancellationToken)
+    {
+        ExecutorBinding prepare = context.Node(new RecordingStep("prepare", ledger, context.InstanceId));
+        ExecutorBinding approve = context.Gate<OrderContext>("approve", gate => gate
+            .Mode(ExecutionMode.RequireApproval)
+            .Reason("BeforeRawSettlement")
+            .AllowModification());
+        ExecutorBinding settle = context.RawNode(
+            (Executor)new RecordingFinish("raw-settle", ledger, context.InstanceId));
+
+        return new ValueTask<Workflow>(new WorkflowBuilder(prepare)
+            .AddEdge(prepare, approve)
+            .AddEdge(approve, settle)
+            .WithOutputFrom(settle)
+            .WithName(Name)
+            .Build());
+    }
+}
+
 /// <summary>Classifies its own failures as retryable, and fails only on the first attempt.</summary>
 internal sealed class RetryingWorkflow(AttemptLedger attempts) : IWorkflowDefinition<OrderContext, OrderResult>
 {
@@ -385,6 +413,7 @@ public sealed class CodeAuthoringHostFixture : WebApplicationFactory<Program>
             services.AddSingleton<IWorkflowDefinition>(new ModifiableWorkflow(Inputs));
             services.AddSingleton<IWorkflowDefinition>(new FixedInputWorkflow(Inputs));
             services.AddSingleton<IWorkflowDefinition>(new RawNodeWorkflow(Inputs));
+            services.AddSingleton<IWorkflowDefinition>(new GateBeforeRawWorkflow(Inputs));
             services.AddSingleton<IWorkflowDefinition>(new RetryingWorkflow(Attempts));
             services.AddSingleton<IWorkflowDefinition>(new EscalatingWorkflow());
             services.AddSingleton<IWorkflowDefinition>(new ValidatingWorkflow());

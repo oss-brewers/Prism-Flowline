@@ -191,7 +191,9 @@ public sealed class DomainEventDispatcher : BackgroundService
     {
         string contextJson = message.PayloadJson;
 
-        if (_registry.Resolve(subscription.WorkflowName!, subscription.WorkflowVersion) is { } descriptor &&
+        if (await _registry
+                .ResolveAsync(subscription.WorkflowName!, subscription.WorkflowVersion, subscription.TenantId, cancellationToken)
+                .ConfigureAwait(false) is { } descriptor &&
             descriptor.Definition is IDomainEventTriggeredWorkflow triggered)
         {
             DomainEventTrigger? declared = triggered.Triggers.FirstOrDefault(t =>
