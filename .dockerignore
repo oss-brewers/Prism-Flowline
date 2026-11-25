@@ -4,6 +4,8 @@
 .github/
 agent-framework/
 docs/
+# The library embeds the DSL schema from docs/schema (see Prism.Flowline.csproj), so the build needs it.
+!docs/schema/
 tests/
 *.user
 *.suo
