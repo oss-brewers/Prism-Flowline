@@ -1,5 +1,11 @@
 # Prism Flowline
 
+[![CI](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/ci.yml)
+[![Container](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/container.yml/badge.svg?branch=master)](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/container.yml)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![Agent Framework 1.28.0](https://img.shields.io/badge/Agent%20Framework-1.28.0-0078D4)](https://www.nuget.org/packages/Microsoft.Agents.AI.Workflows/1.28.0)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Prism Flowline is a .NET workflow runtime and HTTP host for durable, observable workflow instances. It provides workflow version resolution, bounded concurrency, retries, checkpoints, approvals, event history, server-sent events, a topic event broker for event-driven pipelines, cancellation, reruns, and redacted audit/logging surfaces.
 
 The runtime is built on Microsoft Agent Framework workflows. Stores are exposed through interfaces so the in-memory implementation can be replaced by durable persistence without changing workflow definitions.
