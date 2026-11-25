@@ -36,7 +36,7 @@ release".
 
 ## Requirements
 
-- .NET 9 SDK
+- .NET 10 SDK
 - Access to the configured NuGet feeds in `nuget.config`
 
 ## Quick Start

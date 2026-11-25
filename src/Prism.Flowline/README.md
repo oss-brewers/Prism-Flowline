@@ -14,7 +14,7 @@ MVC, Entity Framework, or Redis, so referencing it does not impose a UI or a sto
 dotnet add package Prism.Flowline
 ```
 
-Requires .NET 9 and an ASP.NET Core host (the package uses the `Microsoft.AspNetCore.App` shared
+Requires .NET 10 and an ASP.NET Core host (the package uses the `Microsoft.AspNetCore.App` shared
 framework).
 
 ## Quick start

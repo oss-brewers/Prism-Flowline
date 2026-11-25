@@ -1,6 +1,6 @@
 # Prism Flowline Wiki
 
-Prism Flowline is a .NET 9 workflow runtime and HTTP host built on Microsoft Agent Framework workflows. It turns a graph-based workflow definition into a managed workflow instance with a lifecycle, ownership, retries, checkpoints, approvals, events, logs, and operator controls.
+Prism Flowline is a .NET 10 workflow runtime and HTTP host built on Microsoft Agent Framework workflows. It turns a graph-based workflow definition into a managed workflow instance with a lifecycle, ownership, retries, checkpoints, approvals, events, logs, and operator controls.
 
 This page is the repository-level technical wiki. It documents the implementation in this repository. The product and technical design documents in this directory describe the broader target architecture; where the target and current implementation differ, this page calls out the difference.
 
@@ -47,7 +47,7 @@ This page is the repository-level technical wiki. It documents the implementatio
 
 | Concern | Current behavior |
 | --- | --- |
-| Runtime | .NET 9 / ASP.NET Core minimal API |
+| Runtime | .NET 10 / ASP.NET Core minimal API |
 | Workflow engine | `Microsoft.Agents.AI.Workflows` |
 | Workflow registration | Dependency injection through `AddWorkflow<T>()` or `AddWorkflow(IWorkflowDefinition)` |
 | Persistence | In-memory stores by default |
@@ -61,7 +61,7 @@ This page is the repository-level technical wiki. It documents the implementatio
 | Library | `src/Prism.Flowline` — headless framework: runtime, dispatch, executors, middleware, in-memory stores, HTTP API |
 | Transport adapters | `src/Prism.Flowline.Cache.Redis` and `src/Prism.Flowline.Messaging.RabbitMQ` — each implements the framework's transport contracts and depends on nothing but the framework and its own client |
 | Service host | `src/Prism.Flowline.Service` — control-plane UI, SQL Server stores, startup wiring that selects the adapters |
-| Container | Multi-stage .NET 9 image listening on port 8080 |
+| Container | Multi-stage .NET 10 image listening on port 8080 |
 | Image publishing | GitHub Actions publishes `ghcr.io/oss-brewers/prism-flowline` |
 
 ## Current implementation status
@@ -222,7 +222,7 @@ then register their definitions in the application host.
 
 ### Prerequisites
 
-- .NET 9 SDK
+- .NET 10 SDK
 - Access to the package feeds configured in `nuget.config`
 - Docker Desktop for container work
 
@@ -2010,8 +2010,8 @@ dotnet pack src/Prism.Flowline -c Release -o artifacts
 
 The root `Dockerfile` is a multi-stage build:
 
-1. Restore and publish `src/Prism.Flowline.Service/Prism.Flowline.Service.csproj` with the .NET 9 SDK image.
-2. Copy the publish output into the .NET 9 ASP.NET runtime image.
+1. Restore and publish `src/Prism.Flowline.Service/Prism.Flowline.Service.csproj` with the .NET 10 SDK image.
+2. Copy the publish output into the .NET 10 ASP.NET runtime image.
 3. Listen on port 8080 and run `Prism.Flowline.Service.dll`.
 
 Build and run locally:
@@ -2184,7 +2184,7 @@ The in-memory stores make local development and deterministic tests straightforw
 
 ### Docker publish fails with a C# preview feature error
 
-Use the repository's .NET 9 SDK image and build from the root. The API project and its project references must be copied into the Docker build context. Preview-only syntax should not be introduced into code compiled by the .NET 9 image.
+Use the repository's .NET 10 SDK image and build from the root. The API project and its project references must be copied into the Docker build context. Preview-only syntax should not be introduced into code compiled by the .NET 10 image.
 
 ### `dotnet test --no-build` cannot find a DLL
 

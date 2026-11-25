@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -16,7 +16,7 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <AgentFrameworkVersion>1.16.0</AgentFrameworkVersion>
-    <MicrosoftExtensionsVersion>10.0.9</MicrosoftExtensionsVersion>
+    <AgentFrameworkVersion>1.28.0</AgentFrameworkVersion>
+    <MicrosoftExtensionsVersion>10.0.13</MicrosoftExtensionsVersion>
   </PropertyGroup>
 </Project>

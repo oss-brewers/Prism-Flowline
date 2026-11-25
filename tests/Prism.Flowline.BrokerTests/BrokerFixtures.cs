@@ -87,7 +87,7 @@ public sealed class RedisFixture : IAsyncLifetime
             return;
         }
 
-        _container = new RedisBuilder().WithImage("redis:7-alpine").Build();
+        _container = new RedisBuilder("redis:7-alpine").Build();
         await _container.StartAsync();
         ConnectionString = _container.GetConnectionString();
     }
@@ -116,7 +116,7 @@ public sealed class RabbitMqFixture : IAsyncLifetime
             return;
         }
 
-        _container = new RabbitMqBuilder().WithImage("rabbitmq:4-alpine").Build();
+        _container = new RabbitMqBuilder("rabbitmq:4-alpine").Build();
         await _container.StartAsync();
         ConnectionString = _container.GetConnectionString();
     }
