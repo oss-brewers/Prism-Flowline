@@ -83,8 +83,10 @@ jobs:
 
       - name: Push to GitHub Packages
         run: |
-          dotnet nuget add source "${FEED}" \
-            --name github \
+          # nuget.config already declares the `github` source, so add the credentials to it rather
+          # than adding it again (which fails with "name ... has already been added").
+          dotnet nuget update source github \
+            --source "${FEED}" \
             --username "${{ github.actor }}" \
             --password "${{ secrets.GITHUB_TOKEN }}" \
             --store-password-in-clear-text
