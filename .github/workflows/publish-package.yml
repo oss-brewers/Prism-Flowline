@@ -57,7 +57,7 @@ jobs:
             VERSION=$(grep -oPm1 '(?<=<Version>)[^<]+' src/Prism.Flowline/Prism.Flowline.csproj)
           fi
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Publishing Prism.Flowline and Prism.Flowline.Testing ${VERSION}"
+          echo "Publishing OssBrewers.Prism.Flowline and OssBrewers.Prism.Flowline.Testing ${VERSION}"
 
       - name: Restore
         run: dotnet restore

@@ -11,7 +11,7 @@ MVC, Entity Framework, or Redis, so referencing it does not impose a UI or a sto
 ## Install
 
 ```bash
-dotnet add package Prism.Flowline
+dotnet add package OssBrewers.Prism.Flowline
 ```
 
 Requires .NET 10 and an ASP.NET Core host (the package uses the `Microsoft.AspNetCore.App` shared
@@ -153,7 +153,7 @@ services.AddSingleton<IInstanceStore, SqlServerInstanceStore>();
 
 Implementations must preserve a few invariants: optimistic concurrency on instance updates, terminal
 state never overwritten by a losing writer, exclusive renewable leases, unique ordered event
-sequences per instance, and checkpoint indexes returned oldest-first. `Prism.Flowline.Testing` states
+sequences per instance, and checkpoint indexes returned oldest-first. `OssBrewers.Prism.Flowline.Testing` states
 every one of them as a runnable case — one contract class per store, no test framework required — so
 a new implementation can be checked against the same rules the in-memory stores pass.
 

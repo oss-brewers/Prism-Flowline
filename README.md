@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/ci.yml)
 [![Container](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/container.yml/badge.svg?branch=master)](https://github.com/oss-brewers/Prism-Flowline/actions/workflows/container.yml)
+[![NuGet](https://img.shields.io/nuget/vpre/OssBrewers.Prism.Flowline?logo=nuget&label=nuget)](https://www.nuget.org/packages/OssBrewers.Prism.Flowline)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![Agent Framework 1.28.0](https://img.shields.io/badge/Agent%20Framework-1.28.0-0078D4)](https://www.nuget.org/packages/Microsoft.Agents.AI.Workflows/1.28.0)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -14,16 +15,16 @@ The solution is split in two. `Prism.Flowline` is the reusable, headless framewo
 
 ## Install
 
-`Prism.Flowline`, the framework library, is published to nuget.org. No feed configuration and no credential are needed:
+`OssBrewers.Prism.Flowline`, the framework library, is published to nuget.org. Its assemblies and namespaces are `Prism.Flowline`. No feed configuration and no credential are needed:
 
 ```bash
-dotnet add package Prism.Flowline
+dotnet add package OssBrewers.Prism.Flowline
 ```
 
 A storage provider's own tests can use the store contracts, published alongside:
 
 ```bash
-dotnet add package Prism.Flowline.Testing
+dotnet add package OssBrewers.Prism.Flowline.Testing
 ```
 
 The packages are the headless framework and its contract kit only. `Prism.Flowline.Service` is the reference host and the infrastructure adapters are not published.
@@ -143,6 +144,37 @@ app.Run();
 ```
 
 `AddWorkflowHost` registers every store behind `TryAdd`, so anything you register first wins. `AddBackgroundServices` is what actually executes instances — without it, instances are created and stay `Pending`.
+
+### Embedding it beneath your own platform
+
+A platform that keeps workflows in its own database, compiles them from a canvas, and owns its
+tenants can embed Flowline as the engine. Flowline still owns the run, but the platform decides which
+workflows exist and who may use them.
+
+```csharp
+builder.Services
+    .AddWorkflowHost(builder.Configuration)
+    .AddBackgroundServices()
+    .AddWorkflowSource<CanvasCatalog>();   // IWorkflowDefinitionSource: asked for what was not registered
+
+// In a definition, or in the graph a canvas compiler produces:
+ExecutorBinding review  = context.Node(compiledExecutor, gate => gate.Mode(ExecutionMode.RequireApproval));
+ExecutorBinding approve = context.Gate<OrderContext>("approve", gate => gate.Mode(ExecutionMode.RequireApproval));
+ExecutorBinding agent   = context.RawNode(myAgent.BindAsExecutor());
+```
+
+- **Run-time sources.** A source answers for any workflow the host was not composed with. It can
+  mark a definition private to one tenant, and other tenants are then told the workflow does not
+  exist. Its runs resume and retry on any replica.
+- **Framework executors.** `Node(Executor)` gives any Agent Framework executor a gate, executor
+  middleware and an unchanged event stream. `Gate<T>` gates what cannot be wrapped (agents, ports,
+  sub-workflows) from in front.
+- **Engine events.** Every engine event is recorded: agent output streams as `agent.update`, and
+  responses are stored as `agent.response`.
+- **Your own stores.** `OssBrewers.Prism.Flowline.Testing` proves them against the same contracts the
+  in-memory and SQL Server stores pass.
+
+The wiki chapter [Embedding Flowline](docs/wiki.md#embedding-flowline) has the contract and its limits.
 
 ### Adding a control plane UI
 
@@ -585,10 +617,16 @@ Options are read from the `WorkflowHost` configuration section. For example:
     "Egress": {
       "Enforce": true,
       "AllowedHosts": ["api.example.com"]
+    },
+    "Registry": {
+      "ResolvedCapacity": 1024
     }
   }
 }
 ```
+
+`Registry:ResolvedCapacity` bounds how many definitions from an `IWorkflowDefinitionSource` one
+replica holds, least recently used first out.
 
 The default host uses in-memory instance, event, log, approval, checkpoint, blob, audit, and audit-record stores. Treat this configuration as development-oriented until durable store implementations are supplied.
 
@@ -626,11 +664,12 @@ at startup.
 | `src/Prism.Flowline.Service` | Deployable host: control-plane UI, the SQLite audit-record store, startup wiring, and the example workflow |
 | `tests/Prism.Flowline.UnitTests` | Unit coverage for runtime behavior, and every store contract against the in-memory stores |
 | `tests/Prism.Flowline.DslTests` | Expression, validation and interpreter coverage for the DSL |
-| `tests/Prism.Flowline.IntegrationTests` | HTTP, control-plane, and architecture-boundary coverage against the real host |
+| `tests/Prism.Flowline.IntegrationTests` | HTTP, control-plane, run-time source, package and architecture-boundary coverage against the real host and a library-only host |
 | `tests/Prism.Flowline.ChaosTests` | Failure and lifecycle resilience coverage |
 | `tests/Prism.Flowline.BrokerTests` | The distributed brokers against real Redis and RabbitMQ, via Testcontainers |
 | `tests/Prism.Flowline.StoreTests` | Every store contract against the SQL Server stores on a real SQL Server, via Testcontainers |
 | `tests/Prism.Flowline.LoadTests` | Load-oriented test project |
+| `spikes/framework-executor-adapter` | The throw-away spike behind `Node(Executor)`, outside the solution; `REPORT.md` records what it established |
 
 Folders inside each project:
 
@@ -682,7 +721,7 @@ dotnet test Prism.Flowline.slnx --no-restore
 
 The integration tests exercise the real ASP.NET Core host and its HTTP endpoints; unit tests cover the runtime components and stores independently.
 
-`Prism.Flowline.BrokerTests` is the one suite with an external dependency, and deliberately so — a transport claim that has never touched the wire is not a verified claim. Testcontainers starts Redis and RabbitMQ itself, so there is nothing to run beforehand:
+`Prism.Flowline.BrokerTests` and `Prism.Flowline.StoreTests` are the two suites with an external dependency, and deliberately so: a transport or storage claim that has never touched the real thing is not a verified claim. Testcontainers starts Redis, RabbitMQ and SQL Server itself, so there is nothing to run beforehand:
 
 ```bash
 dotnet test tests/Prism.Flowline.BrokerTests/Prism.Flowline.BrokerTests.csproj

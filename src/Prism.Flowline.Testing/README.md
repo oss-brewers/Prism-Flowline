@@ -8,7 +8,7 @@ that stay terminal, an atomic claim, gap-free event sequences, one winning deliv
 turns each of those sentences into a case you can run against your own store. If your store passes
 every case of a contract, the runtime cannot tell it from the in-memory one.
 
-The package depends on `Prism.Flowline` and nothing else: no test framework, no assertion library.
+The package depends on `OssBrewers.Prism.Flowline` and nothing else: no test framework, no assertion library.
 Each case is a plain method returning a `Task`, so it runs under xunit 2, xunit 3 on
 Microsoft.Testing.Platform, NUnit, MSTest, or a console loop.
 
@@ -51,7 +51,7 @@ following them and is a complete worked example.
 ### 1. Reference the package from your test project
 
 ```xml
-<PackageReference Include="Prism.Flowline.Testing" Version="1.0.0" />
+<PackageReference Include="OssBrewers.Prism.Flowline.Testing" Version="1.0.0" />
 ```
 
 Your test project keeps its own test framework and its own fixtures (a Testcontainers database, a

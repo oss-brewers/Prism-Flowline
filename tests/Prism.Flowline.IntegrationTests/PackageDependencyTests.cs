@@ -92,7 +92,7 @@ public class PackageDependencyTests
 
             pack.ExitCode.Should().Be(0, $"dotnet pack failed:\n{await stdout}\n{await stderr}");
 
-            string package = Directory.GetFiles(output, "Prism.Flowline.*.nupkg").Single();
+            string package = Directory.GetFiles(output, "OssBrewers.Prism.Flowline.*.nupkg").Single();
             using ZipArchive archive = ZipFile.OpenRead(package);
             ZipArchiveEntry entry = archive.Entries.Single(e => e.FullName.EndsWith(".nuspec", StringComparison.OrdinalIgnoreCase));
 

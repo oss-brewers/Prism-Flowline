@@ -50,18 +50,20 @@ This page is the repository-level technical wiki. It documents the implementatio
 | --- | --- |
 | Runtime | .NET 10 / ASP.NET Core minimal API |
 | Workflow engine | `Microsoft.Agents.AI.Workflows` |
-| Workflow registration | Dependency injection through `AddWorkflow<T>()` or `AddWorkflow(IWorkflowDefinition)` |
-| Persistence | In-memory stores by default |
+| Workflow registration | Dependency injection through `AddWorkflow<T>()` or `AddWorkflow(IWorkflowDefinition)`, or resolved at run time from an `IWorkflowDefinitionSource` (see [Embedding Flowline](#embedding-flowline)) |
+| Persistence | In-memory stores by default; SQL Server stores in `Prism.Flowline.Stores.SqlServer`; every store held to the contracts in `Prism.Flowline.Testing` |
 | Checkpoint cadence | Superstep by default; `None`, `SuperStep`, and `Manual` are supported |
 | Ownership | Dispatcher and lease abstractions are used by the host; the default stores are process-local |
 | Events | Sequenced per-instance event store plus optional event bus and SSE relay; nodes emit their own via `Runtime.Notify`, and a definition sets its emission policy |
 | Event broker | Topic pub/sub for event-driven pipelines: workflows start on a trigger or park on a wait. Local in-process by default; Redis Streams or RabbitMQ for cross-service |
 | Approvals | Durable approval contracts and in-memory coordinator/store, with decision and expiry handling |
-| Middleware | Workflow-level and host-executor-level pipelines |
+| Middleware | Workflow-level and executor-level pipelines, for host executors and for Agent Framework executors attached with `Node(Executor)` |
 | Audit records | A workflow declares the shape of its own audit record; the runtime hands every node a recorder and stores entries generically |
 | Library | `src/Prism.Flowline` — headless framework: runtime, dispatch, executors, middleware, in-memory stores, HTTP API |
-| Transport adapters | `src/Prism.Flowline.Cache.Redis` and `src/Prism.Flowline.Messaging.RabbitMQ` — each implements the framework's transport contracts and depends on nothing but the framework and its own client |
-| Service host | `src/Prism.Flowline.Service` — control-plane UI, SQL Server stores, startup wiring that selects the adapters |
+| Infrastructure adapters | `src/Prism.Flowline.Stores.SqlServer`, `src/Prism.Flowline.Cache.Redis` and `src/Prism.Flowline.Messaging.RabbitMQ`. Each implements the framework's contracts over one technology and depends on nothing but the framework and its own client |
+| Store contract | `src/Prism.Flowline.Testing`: one runnable contract per store interface, with no test-framework dependency, so any provider can prove its stores |
+| Service host | `src/Prism.Flowline.Service` — control-plane UI, the SQLite audit-record store, and startup wiring that selects the adapters |
+| Packages | `OssBrewers.Prism.Flowline` and `OssBrewers.Prism.Flowline.Testing` on nuget.org |
 | Container | Multi-stage .NET 10 image listening on port 8080 |
 | Image publishing | GitHub Actions publishes `ghcr.io/oss-brewers/prism-flowline` |
 
@@ -82,7 +84,9 @@ The repository contains a working runtime, API host, control plane, built-in exe
 - `InMemoryDomainEventSubscriptionStore`
 - `InProcessDomainEventBroker`
 
-The store interfaces are the substitution boundary for durable infrastructure. A production deployment must provide shared, durable implementations before relying on process loss recovery or multiple replicas.
+The store interfaces are the substitution boundary for durable infrastructure. A production deployment must provide shared, durable implementations before relying on process loss recovery or multiple replicas. `Prism.Flowline.Stores.SqlServer` supplies them for SQL Server, and the service host selects it when `Prism:SqlServer:ConnectionString` is set. Both the in-memory and the SQL Server stores pass every contract in `Prism.Flowline.Testing`. See [Proving a store](#proving-a-store).
+
+Known gap: the runner does not yet record a checkpoint id on the instance as a run progresses. An instance parked on an approval therefore re-runs its graph from the start after the decision, so the nodes before the gate run again. Resuming from a specific checkpoint works through the operator path: `POST /instances/{id}/rerun` with `mode: "resume"` and a `fromCheckpointId`.
 
 The repository also contains `docs/PRD-Prism-Flowline.md` and `docs/TDD-Prism-Flowline.md`. Those documents describe the intended multi-replica SQL/blob/event-bus architecture and include design decisions that go beyond the current in-memory default.
 
@@ -158,20 +162,28 @@ The default in-memory stores are suitable for development and tests. They do not
 
 | Project | Responsibility |
 | --- | --- |
-| `src/Prism.Flowline` | Headless framework: workflow contracts, runtime, dispatch, executors, middleware, in-memory store defaults, and the HTTP API endpoints |
-| `src/Prism.Flowline.Service` | Deployable host: control-plane UI, concrete persistence and event-bus integrations, service registration, and the workflow definitions this deployment runs |
-| `tests/Prism.Flowline.UnitTests` | Focused runtime and store tests; references the library only |
-| `tests/Prism.Flowline.IntegrationTests` | Real host, HTTP endpoint, control-plane, and architecture-boundary tests |
+| `src/Prism.Flowline` | Headless framework: workflow contracts, runtime, dispatch, executors, middleware, in-memory store defaults, the DSL, and the HTTP API endpoints. Packaged as `OssBrewers.Prism.Flowline` |
+| `src/Prism.Flowline.Testing` | The store contracts, one per store interface, runnable under any test framework. Packaged as `OssBrewers.Prism.Flowline.Testing` |
+| `src/Prism.Flowline.Stores.SqlServer` | SQL Server stores over EF Core: instances, events, logs, approvals, gate policies, audit, blobs and checkpoints |
+| `src/Prism.Flowline.Cache.Redis` | Redis cache adapter: cache store, SSE backplane, cross-replica notifications |
+| `src/Prism.Flowline.Messaging.RabbitMQ` | RabbitMQ messaging adapter: domain-event broker and control channel |
+| `src/Prism.Flowline.Service` | Deployable host: control-plane UI, the SQLite audit-record store, service registration that selects the adapters, and the workflow definitions this deployment runs |
+| `tests/Prism.Flowline.UnitTests` | Runtime tests, plus every store contract run against the in-memory stores; references the library only |
+| `tests/Prism.Flowline.DslTests` | DSL parsing, validation, PrEx and interpretation |
+| `tests/Prism.Flowline.IntegrationTests` | Real host, HTTP endpoint, control-plane, run-time source, package and architecture-boundary tests |
+| `tests/Prism.Flowline.BrokerTests` | Redis and RabbitMQ adapters against real servers (Testcontainers) |
+| `tests/Prism.Flowline.StoreTests` | Every store contract against the SQL Server stores on a Testcontainers SQL Server |
 | `tests/Prism.Flowline.ChaosTests` | Failure and lifecycle resilience tests |
 | `tests/Prism.Flowline.LoadTests` | Load-oriented test project |
+| `spikes/framework-executor-adapter` | Throw-away spike behind `Node(Executor)`, outside the solution; its `REPORT.md` records the findings |
 
 Folders inside each project:
 
 ```
 src/Prism.Flowline/               src/Prism.Flowline.Service/
   Abstractions/                 ControlPlane/      Razor Pages backing services
-  Api/                          Infrastructure/    SQL Server stores
-  Core/                           Auditing/        audit-record store and migrations
+  Api/                          Infrastructure/
+  Core/                           Auditing/        SQLite audit-record store and migrations
   Dispatch/                     Pages/             control-plane Razor Pages
   EventBus/                     Workflows/         workflow definitions hosted here
   Executors/                      <Name>/          one self-contained folder per workflow
@@ -183,6 +195,11 @@ src/Prism.Flowline.Cache.Redis/      src/Prism.Flowline.Messaging.RabbitMQ/
   RedisCacheAdapter.cs                  RabbitMqMessagingAdapter.cs
   RedisNotificationBus.cs               RabbitMqDomainEventBroker.cs
   RedisServiceCollectionExtensions.cs   RabbitMqServiceCollectionExtensions.cs
+
+src/Prism.Flowline.Stores.SqlServer/      src/Prism.Flowline.Testing/
+  SqlServerStores.cs                         <Store>Contract.cs    one per store interface
+  SqlServerInfrastructureStores.cs           StoreContractContext.cs, ContractCase.cs
+  SqlServerServiceCollectionExtensions.cs    README.md             writing a provider's test class
 ```
 
 ### Where the line falls
@@ -196,12 +213,13 @@ without inheriting a UI or a storage choice.
 An **adapter** implements the framework's contracts over one technology. It references
 `Prism.Flowline` and its own client library, and nothing else of ours. In particular it does not
 reference a host — a transport that did would be tied to one deployment and reusable only by copying
-it — and the adapters do not reference each other, so choosing Redis never drags in an AMQP client.
+it — and the adapters do not reference each other, so choosing Redis never drags in an AMQP client. The three are
+`Prism.Flowline.Stores.SqlServer`, `Prism.Flowline.Cache.Redis` and `Prism.Flowline.Messaging.RabbitMQ`.
 
-The **service** supplies what is specific to one deployment: the operator UI, the concrete stores,
-and the startup code that selects an adapter. It references both adapters so an operator can switch
-transport by configuration rather than by rebuild; neither connects unless its connection string is
-set.
+The **service** supplies what is specific to one deployment: the operator UI, the SQLite
+audit-record store, and the startup code that selects an adapter. It references all three adapters so
+an operator can switch infrastructure by configuration rather than by rebuild; none connects unless
+its connection string is set.
 
 `AddPrism` reads as two steps for this reason — register the framework with its in-memory defaults,
 then displace those defaults when a connection string is configured. With neither
@@ -209,14 +227,19 @@ then displace those defaults when a connection string is configured. With neithe
 in memory, which is what keeps local development and the integration suite free of external
 dependencies.
 
-`ArchitectureBoundaryTests` in the integration suite enforces the split: the library must not
-reference the host, EF Core, Redis, or Razor Pages; every framework contract the host implements must
-be a named `SqlServer*` or `Redis*` adapter; and the host must define no framework extension points —
-workflow definitions, host executors, middleware — outside a declared
-`Prism.Flowline.Service.Workflows.<Name>` namespace. That carve-out is what lets a workflow ship inside
-the host assembly without the rule reading as "the shell may grow behaviour of its own".
+`ArchitectureBoundaryTests` in the integration suite enforces the split:
 
-Workflow authors should normally depend on `Prism.Flowline` and its `Prism.Flowline.Abstractions` namespace,
+- the library must not reference the host, EF Core, Redis, or Razor Pages;
+- SQL Server storage lives in its own adapter assembly, never in the host;
+- each adapter depends on the framework and its own client library only;
+- the only framework contract the host implements itself is the SQLite audit-record store;
+- the host must define no framework extension points (workflow definitions, host executors,
+  middleware) outside a declared `Prism.Flowline.Service.Workflows.<Name>` namespace.
+
+That last carve-out is what lets a workflow ship inside the host assembly without the rule reading
+as "the shell may grow behaviour of its own".
+
+Workflow authors should normally reference the `OssBrewers.Prism.Flowline` package and its `Prism.Flowline.Abstractions` namespace,
 then register their definitions in the application host.
 
 ## Getting started
@@ -367,7 +390,8 @@ attachment methods:
 | `Attempt` | 1 on the first run, higher after a retry |
 | `Services` | The host's `IServiceProvider`; resolve brokers, clients, stores from it |
 | `Audit` | The recorder, when the definition declares an audit record |
-| `Node(executor, gate?)` | Attach a host executor, optionally gated |
+| `Node(executor, gate?)` | Attach a host executor, or wrap any Agent Framework `Executor`, optionally gated |
+| `Gate<T>(id, gate)` | An approval gate standing in front of whatever is wired after it |
 | `RawNode(binding)` | Attach a raw framework or agent binding |
 | `Gates`, `Nodes` | What this build declared; read by the runtime and the catalog API |
 
@@ -390,10 +414,18 @@ state is projected by it, per-node notification overrides name it, and the graph
 Renaming a node in a published version silently orphans any tenant policy written against the old id
 — change the workflow version instead.
 
-`RawNode(...)` is the escape hatch for bindings the host did not create. Raw nodes participate in the
-graph but run outside the executor middleware pipeline and **cannot be approval-gated** — passing a
-gate block to `RawNode` throws rather than silently ignoring it, because a gate that quietly did
-nothing would be worse than one that was refused.
+`Node(...)` also takes an Agent Framework `Executor` that was not written as a host executor, such as
+a canvas node or a library's executor. It wraps the executor in an adapter with the same id and
+protocol, so the executor is gated, runs inside the middleware pipeline, and produces the same events
+it would bound raw. See [Framework executors as nodes](#framework-executors-as-nodes).
+
+`RawNode(...)` is the escape hatch for bindings that are not executor instances: `AIAgent` bindings,
+request ports, sub-workflows. Raw nodes participate in the graph but run outside the executor
+middleware pipeline and **cannot be approval-gated** themselves. Passing a gate block to `RawNode`
+throws rather than silently ignoring it, because a gate that quietly did nothing would be worse than
+one that was refused. To require approval before one runs, wire `context.Gate<T>(id, gate)` in front
+of it. The gate is an identity node that passes its message on once approved, or with an approver's
+amendment when the gate allows one.
 
 The framework supplies several ways to make a binding, and `ExecutorBinding` has implicit conversions
 from `Executor`, `AIAgent`, `RequestPort` and `string`:
@@ -1161,7 +1193,7 @@ builder.Services
     .AddWorkflow(new GreetingWorkflow());
 ```
 
-`AddPrism(...)` registers the workflow host, built-in middleware, background services, control-plane UI, and the default in-memory stores. Set `Prism:SqlServer:ConnectionString` to replace the in-memory stores with EF Core SQL Server implementations, and set `Prism:Redis:ConnectionString` to enable Redis Streams, cross-replica control messages, and the cross-service event broker.
+`AddPrism(...)` registers the workflow host, built-in middleware, background services, control-plane UI, and the default in-memory stores. Set `Prism:SqlServer:ConnectionString` to replace the in-memory stores with the EF Core SQL Server implementations in `Prism.Flowline.Stores.SqlServer` (registration refuses to start under `InvariantGlobalization=true`, which SqlClient cannot connect under), and set `Prism:Redis:ConnectionString` to enable Redis Streams, cross-replica control messages, and the cross-service event broker.
 
 ### Middleware ordering
 
@@ -1386,7 +1418,9 @@ The host uses `ICheckpointStore<JsonElement>` through `CheckpointManager.CreateJ
 
 The overflow checkpoint store keeps small payloads inline and sends larger payloads through the blob store abstraction. The default inline threshold is 256 KiB.
 
-Resumption rebuilds the workflow graph from the pinned definition and calls the framework resume path with the latest checkpoint. A crash after an external side effect but before checkpoint commit can cause that executor to run again. This is intentional at-least-once behavior, not exactly-once execution.
+Resumption rebuilds the workflow graph from the pinned definition and calls the framework resume path with the instance's `LatestCheckpointId`. A crash after an external side effect but before checkpoint commit can cause that executor to run again. This is intentional at-least-once behavior, not exactly-once execution.
+
+**Known gap.** The runner does not yet write `LatestCheckpointId` as checkpoints commit. Today it is set only by the operator resume path, `POST /instances/{id}/rerun` with `mode: "resume"` and a `fromCheckpointId` taken from `GET /instances/{id}/checkpoints`; that path resumes from the checkpoint exactly, on any replica. Every other continuation re-runs the graph from the start: after an approval, a retry, or a reclaimed lease. For an instance parked on a gate, the nodes before the gate run again. Keep their side effects idempotent until this is fixed.
 
 ## Human approval gates
 
@@ -1488,7 +1522,7 @@ Configuration writes are recorded in the audit store as `gate.policy.set` and `g
 
 ### Discovering nodes
 
-`GET /workflows/{name}/versions/{version}/nodes` builds the definition once against an inspection context — attaching nothing to a runtime and running no executor — and caches the result per version. Each node reports its executor id, implementation type, input and output types, whether it is configurable, whether it is locked, and its declared, tenant, and effective gates. `RawNode(...)` bindings are listed with `configurable: false`; they run outside the executor middleware pipeline and cannot be approval-gated.
+`GET /workflows/{name}/versions/{version}/nodes` builds the definition once against an inspection context — attaching nothing to a runtime and running no executor — and caches the result per definition (two tenants' private definitions of one name and version are described separately). Each node reports its executor id, implementation type, input and output types, whether it is configurable, whether it is locked, and its declared, tenant, and effective gates. `RawNode(...)` bindings are listed with `configurable: false`; they run outside the executor middleware pipeline and cannot be approval-gated. An Agent Framework executor attached with `Node(Executor)` is listed with `configurable: true` under its own type name, and a `Gate<T>` node appears under its own id.
 
 ## Events, history, and SSE
 
@@ -2111,11 +2145,11 @@ The options distinguish instance, checkpoint, event, and audit retention. With i
 
 ## NuGet package
 
-The framework library ships as `Prism.Flowline` on nuget.org, and the store-contract kit as `Prism.Flowline.Testing` beside it. Neither needs a feed or a credential to restore. The deployable host (`Prism.Flowline.Service`) and the infrastructure adapters are deliberately not packaged. The host is a reference implementation of how to wire concrete infrastructure and host the control-plane UI.
+The framework library ships as `OssBrewers.Prism.Flowline` on nuget.org, and the store-contract kit as `OssBrewers.Prism.Flowline.Testing` beside it. The package ids carry the organisation prefix because nuget.org reserves the `Prism.` prefix for the Prism Library's owners. The assemblies and namespaces are `Prism.Flowline` and `Prism.Flowline.Testing`. Neither needs a feed or a credential to restore. The deployable host (`Prism.Flowline.Service`) and the infrastructure adapters are deliberately not packaged. The host is a reference implementation of how to wire concrete infrastructure and host the control-plane UI.
 
 ```bash
-dotnet add package Prism.Flowline
-dotnet add package Prism.Flowline.Testing   # in a storage provider's test project
+dotnet add package OssBrewers.Prism.Flowline
+dotnet add package OssBrewers.Prism.Flowline.Testing   # in a storage provider's test project
 ```
 
 Packaging is declared in each project file. The root `Directory.Build.props` sets `IsPackable=false`, so a solution-level `dotnet pack` emits only the two packages that opt back in. Each package embeds its own README and the MIT licence, ships XML documentation, and produces a `.snupkg` symbol package alongside.
@@ -2189,21 +2223,25 @@ The solution includes several test layers:
 
 | Suite | Purpose |
 | --- | --- |
-| Unit tests | Contracts, policies, runner behavior, middleware, executors, stores, audit recorder, and control logic |
-| Integration tests | Real ASP.NET Core host, HTTP routes, event streams, approvals, instance controls, the instance state route, and the example workflow end to end |
-| Chaos tests | Failure and lifecycle scenarios |
+| Unit tests | Contracts, policies, runner behavior, the registry and its sources, engine-event translation, the framework executor adapter, middleware, executors, the audit recorder, control logic, and every store contract against the in-memory stores |
+| DSL tests | Parsing, schema and semantic validation, PrEx, and interpretation |
+| Integration tests | Real ASP.NET Core host, HTTP routes, event streams, approvals, instance controls, the instance state route, workflows resolved from a source on a library-only host, the package's dependency list, architecture boundaries, and the example workflow end to end |
 | Broker tests | The distributed brokers against real Redis and RabbitMQ, via Testcontainers |
+| Store tests | Every store contract against the SQL Server stores on a real SQL Server, via Testcontainers |
+| Chaos tests | Failure and lifecycle scenarios |
 | Load tests | Throughput-oriented test project |
 
-Every suite except the broker tests runs with no external dependency, which is what keeps a clone
-testable on a fresh machine. `Prism.Flowline.BrokerTests` is the deliberate exception: a transport claim
-that has never touched the wire is not a verified claim, and no in-memory double can tell you whether
-a Redis consumer group or an AMQP topic exchange behaves the way the abstraction says it does.
+Every suite except the broker and store tests runs with no external dependency, which is what keeps
+a clone testable on a fresh machine. `Prism.Flowline.BrokerTests` and `Prism.Flowline.StoreTests` are the
+deliberate exceptions. A transport or storage claim that has never touched the real thing is not a
+verified claim. No in-memory double can tell you whether a Redis consumer group, an AMQP topic exchange
+or a SQL Server claim under contention behaves the way the abstraction says it does.
 
 Testcontainers starts and disposes the containers itself, so there is nothing to run beforehand. When
 no container runtime is present the tests report as **skipped** rather than failed — a machine or CI
 leg without Docker still gets a green suite instead of a red one it cannot fix. Watch for that in the
-output: a run reporting skips has verified nothing about the transports.
+output: a run reporting skips has verified nothing about the transports or the SQL Server stores.
+Set `PRISM_REQUIRE_DOCKER=true` to turn those skips into failures; CI and the release workflow do.
 
 Common commands:
 
@@ -2220,6 +2258,12 @@ dotnet test tests/Prism.Flowline.UnitTests/Prism.Flowline.UnitTests.csproj
 # The distributed brokers against real Redis and RabbitMQ (needs Docker)
 dotnet test tests/Prism.Flowline.BrokerTests/Prism.Flowline.BrokerTests.csproj
 
+# The store contracts against a real SQL Server (needs Docker)
+dotnet test tests/Prism.Flowline.StoreTests/Prism.Flowline.StoreTests.csproj
+
+# Everything, failing rather than skipping when Docker is missing
+PRISM_REQUIRE_DOCKER=true dotnet test Prism.Flowline.slnx
+
 # One test by name
 dotnet test tests/Prism.Flowline.UnitTests/Prism.Flowline.UnitTests.csproj \
   --filter "FullyQualifiedName~WorkflowRunnerTests"
@@ -2234,9 +2278,13 @@ dotnet test --configuration Release --no-build
 
 ## Extension points
 
+### Workflow definition sources
+
+Implement `IWorkflowDefinitionSource` and register it with `AddWorkflowSource` when workflows live in your own storage rather than in the composition root. The registry asks the source for any workflow it was not composed with, holds what it returns per owner, name and version, and enforces tenant privacy. The four promises a source must keep are in [Embedding Flowline](#workflows-the-host-was-not-composed-with).
+
 ### Custom persistence
 
-Implement the store interfaces used by `AddWorkflowHost`, including instance, event, log, approval, gate policy, audit, audit record, blob, and checkpoint contracts. Preserve these invariants:
+Implement the store interfaces used by `AddWorkflowHost`, including instance, event, log, approval, gate policy, audit, audit record, blob, and checkpoint contracts. `Prism.Flowline.Stores.SqlServer` is a complete worked example. Then prove the implementation against `OssBrewers.Prism.Flowline.Testing`, which states each of the invariants below, and more, as runnable cases (see [Proving a store](#proving-a-store)). In summary:
 
 - Instance updates use optimistic concurrency.
 - Terminal state is not overwritten by a losing writer.
@@ -2257,6 +2305,8 @@ Core SQLite store with a unique index on `(InstanceId, SectionKind, Key)`, regis
 ### Custom executors
 
 Derive from `HostExecutor<TIn, TOut>` and implement `ExecuteCoreAsync`. Keep side effects idempotent and expose useful metadata through the executor descriptor. Do not bypass `HandleAsync`.
+
+An executor written against Agent Framework directly does not have to be rewritten. `context.Node(executor, gate)` wraps it, so it gets the same gate, middleware and events. For an `AIAgent` binding, a request port or a sub-workflow, bind it with `RawNode` and put `context.Gate<T>(id, gate)` in front. See [Framework executors as nodes](#framework-executors-as-nodes).
 
 ### Custom middleware
 
@@ -2296,9 +2346,9 @@ Implement `IDomainEventSubscriptionStore` so triggers and waits outlive the proc
 
 A checkpoint cannot atomically cover every external side effect. An executor may run again after a crash. Use idempotency keys, transactionally recorded effects, or an application-level deduplication table for side-effecting work.
 
-### Host executor middleware boundary
+### Executor middleware boundary
 
-The Agent Framework does not expose a generic interception seam for arbitrary executors. Prism Flowline therefore owns the middleware seam in `HostExecutor<TIn, TOut>`. Raw framework executors can be used, but they do not receive host executor middleware or approval gates.
+The Agent Framework does not expose a generic interception seam for arbitrary executors. Prism Flowline therefore owns the middleware and gate seam: `HostExecutor<TIn, TOut>` for executors written for Flowline, and an adapter for Agent Framework executor instances attached with `Node(Executor)`. The adapter forwards the executor's lifecycle hooks by reflection over five `protected internal` methods, guarded by a test that fails if a framework upgrade renames one. Bindings that are factories rather than instances (`AIAgent`, request ports, sub-workflows) cannot be wrapped. They run without executor middleware and are gated from in front with `Gate<T>`.
 
 ### Pinned workflow versions
 
@@ -2307,6 +2357,8 @@ Version selection occurs at start. Resumption uses the exact recorded version so
 ### Event sequencing
 
 Approval events and progress events share the instance event sequence. This is necessary for one coherent SSE replay cursor and avoids a client observing a progress event without the approval event that caused the instance to park.
+
+`executor.invoked` is recorded from the engine's own event, in stream order, so it always follows the previous node's `executor.completed`; the graph endpoint infers traversed edges from that order. A delivery that parks on a gate announces its invocation itself when the run loop has not reached it yet, so the invocation still precedes the approval it raises. Each invocation is recorded exactly once, whichever side gets there first.
 
 ### In-memory defaults
 
@@ -2427,5 +2479,8 @@ field reference it uses rather than a chapter away from it:
 - [`TDD-Prism-Flowline.md`](TDD-Prism-Flowline.md) - Technical design and framework grounding
 - [`Dockerfile`](../Dockerfile) - Container build
 - [`container.yml`](../.github/workflows/container.yml) - GHCR publishing workflow
-- [`ci.yml`](../.github/workflows/ci.yml) - Build and test workflow
+- [`ci.yml`](../.github/workflows/ci.yml) - Build, test and pack workflow
+- [`publish-package.yml`](../.github/workflows/publish-package.yml) - nuget.org publishing workflow
 - [`release.yml`](../.github/workflows/release.yml) - Release tagging workflow
+- [`src/Prism.Flowline.Testing/README.md`](../src/Prism.Flowline.Testing/README.md) - Writing a storage provider's contract test class
+- [`spikes/framework-executor-adapter/REPORT.md`](../spikes/framework-executor-adapter/REPORT.md) - The spike behind `Node(Executor)`
