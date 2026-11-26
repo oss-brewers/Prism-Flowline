@@ -91,9 +91,9 @@ builder.Services
 
 There are two ways to author a workflow, and both produce an `IWorkflowDefinition` on the same
 runtime: **in C#**, as above, or **as a JSON document** ([Authoring with the DSL](#authoring-with-the-dsl)
-below). Code computes, documents compose; a host can run both at once. Complete references:
-[Authoring workflows in C#](docs/workflow-authoring-guide.md) and
-[Authoring workflows with the Prism DSL](docs/dsl-authoring-guide.md).
+below). Code computes, documents compose; a host can run both at once. The wiki covers both:
+[Authoring a workflow](docs/wiki.md#authoring-a-workflow) and
+[Authoring with the DSL](docs/wiki.md#authoring-with-the-dsl).
 
 ### Declaring executor gates
 
@@ -554,9 +554,8 @@ canonical hash of the document. Routes: `GET /dsl/schema`, `/dsl/nodes`, `/dsl/f
 each version: `GET /workflows/{name}` carries `source` — `dsl` or `compiled` — and, for a document,
 its `documentHash`.
 
-Full walkthrough: [Authoring with the DSL](docs/wiki.md#authoring-with-the-dsl) and the complete
-reference, [Authoring workflows with the Prism DSL](docs/dsl-authoring-guide.md) — whose mirror for
-the compiled path is [Authoring workflows in C#](docs/workflow-authoring-guide.md).
+Full walkthrough: [Authoring with the DSL](docs/wiki.md#authoring-with-the-dsl), with worked
+documents for every shape listed in the wiki's [appendix](docs/wiki.md#appendix-worked-examples).
 Schema: [docs/schema/prism-workflow-dsl-1.0.json](docs/schema/prism-workflow-dsl-1.0.json).
 
 ## Audit records

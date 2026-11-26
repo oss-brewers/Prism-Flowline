@@ -17,11 +17,9 @@ This page is the repository-level technical wiki. It documents the implementatio
   - [Edges](#edges) · [Approval gates on a node](#approval-gates-on-a-node) · [Events on a node](#events-on-a-node)
   - [Failure classification](#failure-classification) · [Engine context](#engine-context-inside-an-executor) · [Middleware](#middleware)
   - [A definition using all of it](#a-definition-using-all-of-it) · [Versioning rules](#versioning-rules-that-bite)
-  - **[Full C# authoring guide](workflow-authoring-guide.md)**
 - [Authoring with the DSL](#authoring-with-the-dsl)
   - [Which one to reach for](#which-one-to-reach-for) · [The envelope](#the-envelope) · [PrEx](#prex-the-expression-language)
   - [Node kinds](#node-kinds) · [Custom nodes](#custom-nodes--the-extension-seam) · [Validation](#validation)
-  - **[Full DSL authoring guide](dsl-authoring-guide.md)**
 - [Workflow audit records](#workflow-audit-records)
 - [Registering workflows and middleware](#registering-workflows-and-middleware)
 - [Embedding Flowline](#embedding-flowline) — [sources](#workflows-the-host-was-not-composed-with) · [framework executors](#framework-executors-as-nodes) · [proving a store](#proving-a-store)
@@ -41,7 +39,7 @@ This page is the repository-level technical wiki. It documents the implementatio
 - [Extension points](#extension-points)
 - [Design constraints](#design-constraints)
 - [Troubleshooting](#troubleshooting)
-- [Appendix: authoring variations](#appendix-authoring-variations) — moved to the two guides
+- [Appendix: worked examples](#appendix-worked-examples)
 - [Related documents](#related-documents)
 
 ## At a glance
@@ -87,8 +85,6 @@ The repository contains a working runtime, API host, control plane, built-in exe
 The store interfaces are the substitution boundary for durable infrastructure. A production deployment must provide shared, durable implementations before relying on process loss recovery or multiple replicas. `Prism.Flowline.Stores.SqlServer` supplies them for SQL Server, and the service host selects it when `Prism:SqlServer:ConnectionString` is set. Both the in-memory and the SQL Server stores pass every contract in `Prism.Flowline.Testing`. See [Proving a store](#proving-a-store).
 
 Known gap: the runner does not yet record a checkpoint id on the instance as a run progresses. An instance parked on an approval therefore re-runs its graph from the start after the decision, so the nodes before the gate run again. Resuming from a specific checkpoint works through the operator path: `POST /instances/{id}/rerun` with `mode: "resume"` and a `fromCheckpointId`.
-
-The repository also contains `docs/PRD-Prism-Flowline.md` and `docs/TDD-Prism-Flowline.md`. Those documents describe the intended multi-replica SQL/blob/event-bus architecture and include design decisions that go beyond the current in-memory default.
 
 ## Architecture
 
@@ -295,7 +291,7 @@ one host can run both at once.
 | A node is | Any C# you can write, in a `HostExecutor<TIn, TOut>` | A declared `kind`, or a registered custom node named in the document |
 | Changing it needs | A build and a deploy | A file, validated at startup or through `POST /dsl/validate` |
 | Reaches | Everything on this page | Everything except arbitrary code, raw/agent/sub-workflow bindings and iteration |
-| Read next | **[Authoring workflows in C#](workflow-authoring-guide.md)** — the complete reference: every built-in executor, edge, gate, notification, trigger, audit hook and middleware seam, with worked variations and an options reference | **[Authoring workflows with the Prism DSL](dsl-authoring-guide.md)** — the complete reference: document anatomy, every node kind, the expression language, diagnostics and limits |
+| Read next | The rest of this chapter: nodes, built-in and custom executors, edges, gates, events, failure classification, middleware, and [a definition using all of it](#a-definition-using-all-of-it) | [Authoring with the DSL](#authoring-with-the-dsl): the envelope, PrEx, node kinds, custom nodes, validation and limits |
 
 The honest split: **code computes, documents compose.** Reach for C# when a node has real logic —
 iterating a collection, aggregating, arithmetic over a domain model — and for the DSL when the change
@@ -303,16 +299,11 @@ is a threshold, a topic, an edge or a prompt, and you would rather not rebuild t
 domain logic in custom nodes written once, composed by a document that anyone can edit.
 [Which one to reach for](#which-one-to-reach-for) compares them properly.
 
-The rest of this chapter is the **orientation for path 1** — enough to write a definition and know
-what the surface is. The [C# authoring guide](workflow-authoring-guide.md) is the reference behind it,
-and [Authoring with the DSL](#authoring-with-the-dsl) below is the orientation for path 2.
+The rest of this chapter covers **path 1**: enough to write a definition and know what the surface
+is. [Authoring with the DSL](#authoring-with-the-dsl) below covers path 2. Worked examples of every
+shape, for both paths, are listed in the [appendix](#appendix-worked-examples).
 
 ---
-
-> **Reference:** what follows is the orientation. For the complete reference — every built-in
-> executor and its options, the full gate, notification, trigger and audit surfaces, the middleware
-> seams, worked variations and an options appendix — see
-> **[Authoring workflows in C#](workflow-authoring-guide.md)**.
 
 A workflow definition supplies a stable name, a semantic version, a typed context/result contract, and a method that builds an Agent Framework workflow graph.
 
@@ -745,9 +736,9 @@ public sealed class OrderWorkflow
 
 ## Authoring with the DSL
 
-> **Reference:** this chapter is the orientation. For the complete field-by-field reference — every
-> node kind, the full expression language, all diagnostic codes, and a framework coverage map —
-> see **[Authoring workflows with the Prism DSL](dsl-authoring-guide.md)**.
+> **Reference:** the normative definition of a document is the JSON Schema,
+> [`schema/prism-workflow-dsl-1.0.json`](schema/prism-workflow-dsl-1.0.json), served at `GET /dsl/schema`.
+> `GET /dsl/nodes` and `GET /dsl/functions` list the node kinds and PrEx functions a host offers.
 
 Everything above authors a workflow in C#. This authors one as a **JSON document**: validated against
 a published schema, interpreted at build time, and registered exactly like a compiled definition.
@@ -2470,31 +2461,44 @@ storage problem surfaces, not the response.
 
 Check the URL scheme, whether the target resolves to an internal address, and whether the hostname matches `WorkflowHost:Egress:AllowedHosts`. Keep `Egress:Enforce=true` unless this is a controlled local test.
 
-## Appendix: authoring variations
+## Appendix: worked examples
 
-The worked variations now live with the reference for each front end, so a recipe sits beside the
-field reference it uses rather than a chapter away from it:
+Every shape this wiki describes has a working example in the test suites, each run on every build,
+so none can drift from what the runtime actually does:
 
-- **[C# — Appendix A](workflow-authoring-guide.md#appendix-a--worked-variations)** — A.1 linear, A.2
-  branch, A.3 fan-out and fan-in, A.4 approval gates, A.5 durable delay, A.6 HTTP call, A.7 LLM node,
-  A.8 started by an event, A.9 publish and wait, A.10 quiet a chatty workflow, A.11 log without
-  streaming, A.12 custom notifications, A.13 audit record, A.14 custom failure classification,
-  A.15 raw nodes, agents and sub-workflows, A.16 registering what you built.
-- **[DSL — Appendix A](dsl-authoring-guide.md#appendix-a--worked-variations)** — the same shapes as
-  documents, so the two read side by side.
+- **C# definitions.**
+  - [`HostFixture.cs`](../tests/Prism.Flowline.IntegrationTests/HostFixture.cs): linear, gated,
+    tenant-configurable and audited workflows.
+  - [`CodeAuthoringFixture.cs`](../tests/Prism.Flowline.IntegrationTests/CodeAuthoringFixture.cs):
+    every gate variation (quorum, assignees, segregation of duties, modification, each expiry action),
+    a raw node, a `Gate<T>` in front of a raw node, retry and escalation classifiers, context
+    validation.
+  - [`CodeCompositionTests.cs`](../tests/Prism.Flowline.IntegrationTests/CodeCompositionTests.cs):
+    middleware composition and version resolution.
+  - [`NotificationPipelineTests.cs`](../tests/Prism.Flowline.IntegrationTests/NotificationPipelineTests.cs):
+    an LLM node and notifications.
+  - [`SourcedWorkflowTests.cs`](../tests/Prism.Flowline.IntegrationTests/SourcedWorkflowTests.cs):
+    a workflow served by a source.
+  - [`FrameworkExecutorAdapterTests.cs`](../tests/Prism.Flowline.UnitTests/FrameworkExecutorAdapterTests.cs)
+    and [`FrameworkExecutorEventTests.cs`](../tests/Prism.Flowline.UnitTests/FrameworkExecutorEventTests.cs):
+    raw Agent Framework executors and an `AIAgent` in a graph.
+- **DSL documents.**
+  - [`DslDocuments.cs`](../tests/Prism.Flowline.IntegrationTests/DslDocuments.cs): one document per
+    conversion the interpreter performs, covering linear, branch, fan-out and fan-in, gates,
+    notifications, triggers, audit and failure rules.
+  - [`DslAuthoringDocuments.cs`](../tests/Prism.Flowline.IntegrationTests/DslAuthoringDocuments.cs):
+    gate, failure-rule and node-option variations.
+- **The deployed example.** [`Workflows/ExampleOrder`](../src/Prism.Flowline.Service/Workflows/ExampleOrder)
+  in the service host: a complete audited workflow, as a deployment would ship one.
 
 ## Related documents
 
-- [`workflow-authoring-guide.md`](workflow-authoring-guide.md) - Complete reference for authoring workflows in C#
-- [`dsl-authoring-guide.md`](dsl-authoring-guide.md) - Complete reference for authoring workflows as JSON documents
 - [`schema/prism-workflow-dsl-1.0.json`](schema/prism-workflow-dsl-1.0.json) - The DSL's normative JSON Schema
 - [`README.md`](../README.md) - Short setup and API overview
-- [`PRD-Prism-Flowline.md`](PRD-Prism-Flowline.md) - Product requirements and target architecture
-- [`TDD-Prism-Flowline.md`](TDD-Prism-Flowline.md) - Technical design and framework grounding
 - [`Dockerfile`](../Dockerfile) - Container build
 - [`container.yml`](../.github/workflows/container.yml) - GHCR publishing workflow
 - [`ci.yml`](../.github/workflows/ci.yml) - Build, test and pack workflow
-- [`publish-package.yml`](../.github/workflows/publish-package.yml) - nuget.org publishing workflow
+- [`publish-package.yml`](../.github/workflows/publish-package.yml) - Package publishing workflow: nuget.org on a tag, or GitHub Packages on demand
 - [`release.yml`](../.github/workflows/release.yml) - Release tagging workflow
 - [`src/Prism.Flowline.Testing/README.md`](../src/Prism.Flowline.Testing/README.md) - Writing a storage provider's contract test class
 - [`spikes/framework-executor-adapter/REPORT.md`](../spikes/framework-executor-adapter/REPORT.md) - The spike behind `Node(Executor)`
