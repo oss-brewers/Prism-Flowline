@@ -176,6 +176,37 @@ ExecutorBinding agent   = context.RawNode(myAgent.BindAsExecutor());
 
 The wiki chapter [Embedding Flowline](docs/wiki.md#embedding-flowline) has the contract and its limits.
 
+### The run-time registry
+
+The registry resolves a workflow by name, and optionally version, for the tenant a request acts
+for. A source only has to answer one question:
+
+```csharp
+public sealed class CanvasCatalog(ICanvasStore canvases, ICanvasCompiler compiler) : IWorkflowDefinitionSource
+{
+    public async ValueTask<ResolvedWorkflow?> FindAsync(WorkflowLookup lookup, CancellationToken ct)
+        => await canvases.FindPublishedAsync(lookup.Name, lookup.Version, lookup.TenantId, ct) is { } canvas
+            ? new ResolvedWorkflow(compiler.Compile(canvas)) { TenantId = canvas.OwnerTenantId }  // null = shared
+            : null;                                                                                // null = no such workflow
+}
+```
+
+| Behaviour | What happens |
+| --- | --- |
+| Resolution order | A definition registered at start-up wins, then a definition already held, then the sources in registration order |
+| No version asked | Goes to the source every time, because only it knows when "current" moves; that version is then served from the registry's copy |
+| Tenant-private | A definition with a `TenantId` is held apart and never served to another tenant; to them it does not exist (`404`) |
+| Caching | Up to `WorkflowHost:Registry:ResolvedCapacity` definitions per replica (default 1,024), least recently used out. Concurrent first lookups share one trip to the source |
+| Source returns null | Start returns `404`; a run whose version has gone is dead-stopped |
+| Source throws | Start fails with nothing created; a run is rescheduled with the ordinary retry backoff |
+| Refused answers | A wrong name, a wrong or missing version, an invalid notification name, or a domain-event trigger (triggers are start-up only) |
+| Not changed | `GET /workflows` lists start-up registrations only, and gate policies apply to sourced workflows unchanged |
+
+A source promises that a version never changes, and that it answers after a restart on any replica.
+An instance re-resolves its definition on every resume, retry and claim, which is why this is a pull
+contract rather than a run-time `Register` call. `IWorkflowRegistry.Invalidate` forgets held
+definitions on one replica, for withdrawing a draft.
+
 ### Adding a control plane UI
 
 A UI is a separate concern layered on top. `Prism.Flowline.Service` keeps that separation strictly: the control plane is Razor Pages in the host project — a dashboard, a workflow catalog, instance detail with a live graph and event stream, and an approval queue — and it reaches the runtime **only through the public HTTP API**, never by injecting `IInstanceStore` or the runner. That is what keeps the UI honest: anything the UI can do, an API client can do too.
@@ -264,6 +295,8 @@ Note that the reference control plane does not yet expose the per-tenant node co
 - `POST /workflows/{name}/instances`
 
 The start endpoint accepts an optional `version` query parameter and supports `Idempotency-Key` and `Prefer: wait=<seconds>` headers.
+
+The two listing routes show workflows registered at start-up only. A workflow that comes from an `IWorkflowDefinitionSource` (see [Embedding it beneath your own platform](#embedding-it-beneath-your-own-platform)) is not listed, because a source cannot be enumerated. It still starts by name, and every other workflow and instance route works for it. A private workflow started by another tenant returns `404`, exactly as an unknown name does.
 
 ### Per-tenant executor configuration
 

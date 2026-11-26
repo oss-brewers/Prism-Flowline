@@ -1193,6 +1193,20 @@ builder.Services
     .AddWorkflow(new GreetingWorkflow());
 ```
 
+Workflows the host is not composed with — kept in a database, published from an editor, compiled
+from a canvas — come from a source the registry asks at run time:
+
+```csharp
+builder.Services
+  .AddPrism(builder.Configuration)
+    .AddWorkflowSource<CanvasCatalog>();   // IWorkflowDefinitionSource
+```
+
+Start-up registrations always win. A source can add workflows and versions, and can make a
+definition private to one tenant. Sourced workflows are not listed by `GET /workflows`. The run-time
+registry's resolution order, caching and the promises a source makes are in
+[Workflows the host was not composed with](#workflows-the-host-was-not-composed-with).
+
 `AddPrism(...)` registers the workflow host, built-in middleware, background services, control-plane UI, and the default in-memory stores. Set `Prism:SqlServer:ConnectionString` to replace the in-memory stores with the EF Core SQL Server implementations in `Prism.Flowline.Stores.SqlServer` (registration refuses to start under `InvariantGlobalization=true`, which SqlClient cannot connect under), and set `Prism:Redis:ConnectionString` to enable Redis Streams, cross-replica control messages, and the cross-service event broker.
 
 ### Middleware ordering
