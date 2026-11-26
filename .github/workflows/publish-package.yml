@@ -1,4 +1,4 @@
-name: Package (Publish to nuget.org)
+name: Package (Publish to nuget.org or GitHub Packages)
 
 # Releases the library and its store-contract kit to nuget.org, where anyone can restore them with no
 # feed configuration and no credential. Triggered by a `v*` tag, or by hand with an explicit version.
@@ -22,13 +22,25 @@ on:
         description: "Package version to publish (defaults to the version in Prism.Flowline.csproj)"
         required: false
         type: string
+      target:
+        description: "Where to publish. Tag pushes always go to nuget.org."
+        required: false
+        type: choice
+        default: nuget
+        options:
+          - nuget
+          - github
 
 permissions:
   contents: read
   id-token: write   # the OIDC token trusted publishing exchanges for a temporary API key
+  packages: write   # the github target pushes with GITHUB_TOKEN
 
 env:
   NUGET_SOURCE: https://api.nuget.org/v3/index.json
+  GITHUB_PACKAGES_SOURCE: https://nuget.pkg.github.com/oss-brewers/index.json
+  # A tag push has no inputs, so it falls through to nuget.org.
+  TARGET: ${{ inputs.target || 'nuget' }}
 
 jobs:
   publish:
@@ -99,6 +111,7 @@ jobs:
 
       # Requested here, just before the push, because the key lasts an hour.
       - name: NuGet login (OIDC to temporary API key)
+        if: env.TARGET == 'nuget'
         uses: NuGet/login@v1
         id: login
         with:
@@ -107,8 +120,21 @@ jobs:
       # The .snupkg beside each .nupkg is pushed with it. --skip-duplicate keeps a re-run of the same
       # tag idempotent, since nuget.org refuses to overwrite a published version.
       - name: Push to nuget.org
+        if: env.TARGET == 'nuget'
         run: >
           dotnet nuget push "artifacts/*.nupkg"
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --source ${{ env.NUGET_SOURCE }}
           --skip-duplicate
+
+      # For consumers inside the organisation that restore from GitHub Packages. The packages are
+      # linked to this repository through their RepositoryUrl, which is what lets GITHUB_TOKEN create
+      # and update them. --no-symbols because the feed does not accept .snupkg.
+      - name: Push to GitHub Packages
+        if: env.TARGET == 'github'
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --api-key ${{ secrets.GITHUB_TOKEN }}
+          --source ${{ env.GITHUB_PACKAGES_SOURCE }}
+          --skip-duplicate
+          --no-symbols
