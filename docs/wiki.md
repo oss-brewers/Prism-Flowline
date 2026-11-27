@@ -737,7 +737,7 @@ public sealed class OrderWorkflow
 ## Authoring with the DSL
 
 > **Reference:** the normative definition of a document is the JSON Schema,
-> [`schema/prism-workflow-dsl-1.0.json`](schema/prism-workflow-dsl-1.0.json), served at `GET /dsl/schema`.
+> [`schema/prism-workflow-dsl-1.0.json`](https://github.com/oss-brewers/Prism-Flowline/blob/master/docs/schema/prism-workflow-dsl-1.0.json), served at `GET /dsl/schema`.
 > `GET /dsl/nodes` and `GET /dsl/functions` list the node kinds and PrEx functions a host offers.
 
 Everything above authors a workflow in C#. This authors one as a **JSON document**: validated against
@@ -1317,7 +1317,7 @@ builder.AddEdge(prepare, approve).AddEdge(approve, dispatch);
 
 The engine's own events from these executors are recorded too. See [Events from framework executors](#events-from-framework-executors).
 
-The design and its reasoning are in the embedded-host design document. The adapter spike that settled what Agent Framework permits is in [`spikes/framework-executor-adapter/REPORT.md`](../spikes/framework-executor-adapter/REPORT.md).
+The design and its reasoning are in the embedded-host design document. The adapter spike that settled what Agent Framework permits is in [`spikes/framework-executor-adapter/REPORT.md`](https://github.com/oss-brewers/Prism-Flowline/blob/master/spikes/framework-executor-adapter/REPORT.md).
 
 ### Proving a store
 
@@ -2467,38 +2467,38 @@ Every shape this wiki describes has a working example in the test suites, each r
 so none can drift from what the runtime actually does:
 
 - **C# definitions.**
-  - [`HostFixture.cs`](../tests/Prism.Flowline.IntegrationTests/HostFixture.cs): linear, gated,
+  - [`HostFixture.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/HostFixture.cs): linear, gated,
     tenant-configurable and audited workflows.
-  - [`CodeAuthoringFixture.cs`](../tests/Prism.Flowline.IntegrationTests/CodeAuthoringFixture.cs):
+  - [`CodeAuthoringFixture.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/CodeAuthoringFixture.cs):
     every gate variation (quorum, assignees, segregation of duties, modification, each expiry action),
     a raw node, a `Gate<T>` in front of a raw node, retry and escalation classifiers, context
     validation.
-  - [`CodeCompositionTests.cs`](../tests/Prism.Flowline.IntegrationTests/CodeCompositionTests.cs):
+  - [`CodeCompositionTests.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/CodeCompositionTests.cs):
     middleware composition and version resolution.
-  - [`NotificationPipelineTests.cs`](../tests/Prism.Flowline.IntegrationTests/NotificationPipelineTests.cs):
+  - [`NotificationPipelineTests.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/NotificationPipelineTests.cs):
     an LLM node and notifications.
-  - [`SourcedWorkflowTests.cs`](../tests/Prism.Flowline.IntegrationTests/SourcedWorkflowTests.cs):
+  - [`SourcedWorkflowTests.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/SourcedWorkflowTests.cs):
     a workflow served by a source.
-  - [`FrameworkExecutorAdapterTests.cs`](../tests/Prism.Flowline.UnitTests/FrameworkExecutorAdapterTests.cs)
-    and [`FrameworkExecutorEventTests.cs`](../tests/Prism.Flowline.UnitTests/FrameworkExecutorEventTests.cs):
+  - [`FrameworkExecutorAdapterTests.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.UnitTests/FrameworkExecutorAdapterTests.cs)
+    and [`FrameworkExecutorEventTests.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.UnitTests/FrameworkExecutorEventTests.cs):
     raw Agent Framework executors and an `AIAgent` in a graph.
 - **DSL documents.**
-  - [`DslDocuments.cs`](../tests/Prism.Flowline.IntegrationTests/DslDocuments.cs): one document per
+  - [`DslDocuments.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/DslDocuments.cs): one document per
     conversion the interpreter performs, covering linear, branch, fan-out and fan-in, gates,
     notifications, triggers, audit and failure rules.
-  - [`DslAuthoringDocuments.cs`](../tests/Prism.Flowline.IntegrationTests/DslAuthoringDocuments.cs):
+  - [`DslAuthoringDocuments.cs`](https://github.com/oss-brewers/Prism-Flowline/blob/master/tests/Prism.Flowline.IntegrationTests/DslAuthoringDocuments.cs):
     gate, failure-rule and node-option variations.
-- **The deployed example.** [`Workflows/ExampleOrder`](../src/Prism.Flowline.Service/Workflows/ExampleOrder)
+- **The deployed example.** [`Workflows/ExampleOrder`](https://github.com/oss-brewers/Prism-Flowline/tree/master/src/Prism.Flowline.Service/Workflows/ExampleOrder)
   in the service host: a complete audited workflow, as a deployment would ship one.
 
 ## Related documents
 
-- [`schema/prism-workflow-dsl-1.0.json`](schema/prism-workflow-dsl-1.0.json) - The DSL's normative JSON Schema
-- [`README.md`](../README.md) - Short setup and API overview
-- [`Dockerfile`](../Dockerfile) - Container build
-- [`container.yml`](../.github/workflows/container.yml) - GHCR publishing workflow
-- [`ci.yml`](../.github/workflows/ci.yml) - Build, test and pack workflow
-- [`publish-package.yml`](../.github/workflows/publish-package.yml) - Package publishing workflow: nuget.org on a tag, or GitHub Packages on demand
-- [`release.yml`](../.github/workflows/release.yml) - Release tagging workflow
-- [`src/Prism.Flowline.Testing/README.md`](../src/Prism.Flowline.Testing/README.md) - Writing a storage provider's contract test class
-- [`spikes/framework-executor-adapter/REPORT.md`](../spikes/framework-executor-adapter/REPORT.md) - The spike behind `Node(Executor)`
+- [`schema/prism-workflow-dsl-1.0.json`](https://github.com/oss-brewers/Prism-Flowline/blob/master/docs/schema/prism-workflow-dsl-1.0.json) - The DSL's normative JSON Schema
+- [`README.md`](https://github.com/oss-brewers/Prism-Flowline/blob/master/README.md) - Short setup and API overview
+- [`Dockerfile`](https://github.com/oss-brewers/Prism-Flowline/blob/master/Dockerfile) - Container build
+- [`container.yml`](https://github.com/oss-brewers/Prism-Flowline/blob/master/.github/workflows/container.yml) - GHCR publishing workflow
+- [`ci.yml`](https://github.com/oss-brewers/Prism-Flowline/blob/master/.github/workflows/ci.yml) - Build, test and pack workflow
+- [`publish-package.yml`](https://github.com/oss-brewers/Prism-Flowline/blob/master/.github/workflows/publish-package.yml) - Package publishing workflow: nuget.org on a tag, or GitHub Packages on demand
+- [`release.yml`](https://github.com/oss-brewers/Prism-Flowline/blob/master/.github/workflows/release.yml) - Release tagging workflow
+- [`src/Prism.Flowline.Testing/README.md`](https://github.com/oss-brewers/Prism-Flowline/blob/master/src/Prism.Flowline.Testing/README.md) - Writing a storage provider's contract test class
+- [`spikes/framework-executor-adapter/REPORT.md`](https://github.com/oss-brewers/Prism-Flowline/blob/master/spikes/framework-executor-adapter/REPORT.md) - The spike behind `Node(Executor)`
